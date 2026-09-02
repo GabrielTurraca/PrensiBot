@@ -201,11 +201,21 @@ async function iniciarBot() {
                 continue;
             }
 
-            const numero = msg.key.remoteJid;
-            
-            if (!numero.endsWith("@s.whatsapp.net")) {
-                if (numero.endsWith("@g.us")) {
-                    console.log(`[GRUPO DETECTADO] ID: ${numero}`);
+            const numero = msg.key.remoteJid || "";
+            const participant = msg.key.participant || msg.participant || "";
+
+            // Ignorar estrictamente todo mensaje de grupo, canal o difusión
+            const isGroup = !!participant || 
+                            numero.endsWith("@g.us") || 
+                            numero.includes("@g.us") || 
+                            numero === REPORTE_GROUP_JID || 
+                            !numero.endsWith("@s.whatsapp.net");
+
+            if (isGroup) {
+                if (numero.endsWith("@g.us") || numero === REPORTE_GROUP_JID) {
+                    console.log(`[GRUPO IGNORADO] ID: ${numero}`);
+                } else if (participant) {
+                    console.log(`[MENSAJE DE GRUPO IGNORADO] Participante: ${participant.split('@')[0]} en ${numero}`);
                 }
                 continue;
             }
