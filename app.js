@@ -29,6 +29,7 @@ const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID || "1Q9Oi0PNtdMugEfYyB7Bn3
 const REPORTE_GROUP_JID = process.env.REPORTE_GROUP_JID || "120363250224178634@g.us"; // Grupo oficial de Prensa
 const ADMIN_NUMBER_JID = process.env.ADMIN_NUMBER_JID || "5493624408292@s.whatsapp.net"; // Número personal del administrador
 const PORT = process.env.PORT || 3000;
+const MAX_FILE_SIZE_MB = parseInt(process.env.MAX_FILE_SIZE_MB || "100", 10);
 
 const WELCOME_MESSAGE = `¡Hola! Te damos la bienvenida a la línea de Prensa y Comunicación de la DRE X-A y X-B. 📸
 
@@ -69,6 +70,36 @@ await cargarContador();
 let sockGlobal = null;
 const sesiones = new Map();
 const TEMP_DIR = "./temp";
+
+async function limpiarArchivosHuerfanos() {
+    if (!existsSync(TEMP_DIR)) return;
+    try {
+        const archivos = await fsPromises.readdir(TEMP_DIR);
+        const ahora = Date.now();
+        const UN_HORA_MS = 60 * 60 * 1000; // 1 hora en ms
+        let borrados = 0;
+
+        for (const archivo of archivos) {
+            const pathArchivo = `${TEMP_DIR}/${archivo}`;
+            try {
+                const stat = await fsPromises.stat(pathArchivo);
+                if (stat.isFile() && (ahora - stat.mtimeMs > UN_HORA_MS)) {
+                    await fsPromises.unlink(pathArchivo);
+                    borrados++;
+                }
+            } catch (e) {
+                console.error(`❌ Error al procesar archivo temporal ${archivo}:`, e);
+            }
+        }
+        if (borrados > 0) {
+            console.log(`🧹 Limpieza al iniciar: Se eliminaron ${borrados} archivo(s) huérfano(s) de ./temp/`);
+        } else {
+            console.log(`🧹 Limpieza al iniciar: No se encontraron archivos huérfanos en ./temp/`);
+        }
+    } catch (e) {
+        console.error("❌ Error al ejecutar limpieza de archivos huérfanos:", e);
+    }
+}
 
 async function initGoogleDrive() {
     if (!existsSync(SECRET_PATH) || !existsSync(TOKEN_PATH)) {
@@ -133,6 +164,30 @@ async function subirArchivoStream(fileStreamOrBuffer, nombreArchivo, mimeType, f
     return response.data.id;
 }
 
+/**
+ * Reintentos con backoff exponencial para subida a Drive (hasta maxReintentos)
+ */
+async function subirArchivoConReintentos(filePath, nombreArchivo, mimeType, folderId, maxReintentos = 3) {
+    let intento = 0;
+    while (intento < maxReintentos) {
+        intento++;
+        try {
+            const fileStream = createReadStream(filePath);
+            const id = await subirArchivoStream(fileStream, nombreArchivo, mimeType, folderId);
+            return id;
+        } catch (err) {
+            console.error(`⚠️ [DRIVE] Intento ${intento}/${maxReintentos} falló al subir ${nombreArchivo}: ${err.message}`);
+            if (intento < maxReintentos) {
+                const backoffMs = Math.pow(2, intento) * 1000; // 2s, 4s, 8s
+                console.log(`⏳ [DRIVE] Reintentando subida de ${nombreArchivo} en ${backoffMs / 1000}s...`);
+                await new Promise(res => setTimeout(res, backoffMs));
+            } else {
+                throw new Error(`Fallaron los ${maxReintentos} intentos de subida para ${nombreArchivo}: ${err.message}`);
+            }
+        }
+    }
+}
+
 function obtenerMensajeInterno(message) {
     if (!message) return null;
     if (message.ephemeralMessage) {
@@ -160,6 +215,8 @@ async function iniciarBot() {
     if (!existsSync(TEMP_DIR)) {
         await fsPromises.mkdir(TEMP_DIR, { recursive: true });
     }
+    
+    await limpiarArchivosHuerfanos();
     
     const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
     const { version } = await fetchLatestBaileysVersion();
@@ -276,6 +333,22 @@ async function iniciarBot() {
                 }
 
                 if (esArchivo) {
+                    // Verificación de tamaño antes de iniciar descarga
+                    let sizeInBytes = 0;
+                    if (messageContent.imageMessage) sizeInBytes = Number(messageContent.imageMessage.fileLength || 0);
+                    else if (messageContent.videoMessage) sizeInBytes = Number(messageContent.videoMessage.fileLength || 0);
+                    else if (messageContent.documentMessage) sizeInBytes = Number(messageContent.documentMessage.fileLength || 0);
+
+                    const maxSizeBytes = MAX_FILE_SIZE_MB * 1024 * 1024;
+                    if (sizeInBytes > maxSizeBytes) {
+                        const sizeMB = (sizeInBytes / (1024 * 1024)).toFixed(1);
+                        console.warn(`[DESCARGA OMITIDA] Archivo de ${numero.split('@')[0]} supera el límite (${sizeMB} MB > ${MAX_FILE_SIZE_MB} MB)`);
+                        await sock.sendMessage(numero, { text: `⚠️ El archivo enviado es demasiado pesado (${sizeMB} MB). El tamaño máximo permitido es de ${MAX_FILE_SIZE_MB} MB. Por favor enviá un video más corto o comprimido.` });
+                        esArchivo = false;
+                    }
+                }
+
+                if (esArchivo) {
                     sesion.activeDownloads++;
                     console.log(`[DESCARGA] Iniciando descarga de archivo de ${numero.split('@')[0]} (Descargas activas: ${sesion.activeDownloads})`);
                     try {
@@ -332,25 +405,38 @@ async function iniciarBot() {
                                     carpeta = await crearCarpeta(carpetaName);
                                 }
                                 
+                                let subidosConExito = 0;
                                 for (const archivo of sesion.archivosLocales) {
                                     if (existsSync(archivo.path)) {
-                                        console.log(`[DRIVE] Subiendo archivo a Drive (Streaming): ${archivo.name}`);
-                                        const fileStream = createReadStream(archivo.path);
-                                        await subirArchivoStream(fileStream, archivo.name, archivo.mimeType, carpeta.id);
-                                        await fsPromises.unlink(archivo.path);
-                                        console.log(`[DRIVE] Archivo subido y eliminado localmente: ${archivo.name}`);
+                                        console.log(`[DRIVE] Subiendo archivo a Drive (Streaming con reintentos): ${archivo.name}`);
+                                        try {
+                                            await subirArchivoConReintentos(archivo.path, archivo.name, archivo.mimeType, carpeta.id);
+                                            await fsPromises.unlink(archivo.path);
+                                            console.log(`[DRIVE] Archivo subido y eliminado localmente: ${archivo.name}`);
+                                            subidosConExito++;
+                                        } catch (uploadErr) {
+                                            console.error(`❌ [DRIVE] Falló definitivamente la subida de ${archivo.name}. Se conserva en ./temp/ para revisión manual: ${uploadErr.message}`);
+                                        }
                                     }
                                 }
                                 
-                                enviosNuevos++;
-                                await guardarContador();
-                                console.log(`[DRIVE] Subida completada con éxito para ${numero.split('@')[0]}. Enviando mensaje de agradecimiento.`);
-                                await sock.sendMessage(numero, { text: "Gracias por compartirlo con el equipo de Prensa." });
+                                if (subidosConExito > 0) {
+                                    enviosNuevos++;
+                                    await guardarContador();
+                                    console.log(`[DRIVE] Subida completada con éxito para ${numero.split('@')[0]}. Enviando mensaje de agradecimiento.`);
+                                    await sock.sendMessage(numero, { text: "Gracias por compartirlo con el equipo de Prensa." });
+                                } else {
+                                    console.error(`❌ [DRIVE] No se pudo subir ningún archivo enviado por wa.me/${numero.split('@')[0]}. Los archivos se conservan en ./temp/.`);
+                                    try {
+                                        await sock.sendMessage(ADMIN_NUMBER_JID, { text: `⚠️ *Error de Subida a Drive*\nFalló la subida de todos los archivos enviados por: wa.me/${numero.split('@')[0]}\nLos archivos se conservan en ./temp/ del servidor para revisión manual.` });
+                                    } catch (notifyErr) {
+                                        console.error("Error al notificar al admin:", notifyErr);
+                                    }
+                                }
                             } catch (err) {
-                                console.error("[DRIVE] Error al subir a drive:", err);
-                                await sock.sendMessage(numero, { text: "Gracias por compartirlo con el equipo de Prensa." });
+                                console.error("[DRIVE] Error inesperado durante el ciclo de subida a drive:", err);
                                 try {
-                                    await sock.sendMessage(ADMIN_NUMBER_JID, { text: `⚠️ *Error de Subida a Drive*\nFalló la subida del material enviado por: wa.me/${numero.split('@')[0]}\nRevisa el log para más detalles.` });
+                                    await sock.sendMessage(ADMIN_NUMBER_JID, { text: `⚠️ *Error Inesperado en Subida a Drive*\nOcurrió un fallo en el ciclo de subida para: wa.me/${numero.split('@')[0]}` });
                                 } catch (notifyErr) {
                                     console.error("Error al notificar al admin:", notifyErr);
                                 }
