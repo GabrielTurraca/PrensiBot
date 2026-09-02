@@ -1,0 +1,21 @@
+# Credenciales de sesión de WhatsApp
+auth_info/
+
+# Credenciales de Google Drive API
+token.json
+client_secret.json
+
+# Variables de entorno
+.env
+
+# Directorios de medios y descargas temporales
+temp/
+temp-media/
+
+# Archivos de logs y contadores internos
+*.log
+counter.json
+
+# Dependencias locales de Node.js (por si se instalan en el futuro)
+node_modules/
+package-lock.json

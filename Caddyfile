@@ -1,0 +1,21 @@
+# Caddyfile de Configuración para N8N con SSL Automático
+# Cuando implementes este archivo en producción, renómbralo a "Caddyfile"
+# y asegúrate de que DOMAIN_NAME esté definido en tu archivo .env
+
+{$DOMAIN_NAME} {
+    # Redirige todo el tráfico seguro HTTPS al contenedor n8n-main en el puerto 5678
+    reverse_proxy n8n-main:5678
+
+    # Opcional: Configuraciones adicionales de seguridad
+    header {
+        # Prevenir ataques clickjacking
+        X-Frame-Options "SAMEORIGIN"
+        # Protección XSS básica
+        X-XSS-Protection "1; mode=block"
+        # Prevenir que el navegador trate de adivinar el MIME-type
+        X-Content-Type-Options "nosniff"
+    }
+
+    # Habilitar compresión de respuestas gzip y zstd
+    encode zstd gzip
+}

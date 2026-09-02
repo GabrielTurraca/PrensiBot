@@ -1,0 +1,126 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: n8n-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-n8n_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-n8n_db}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: valkey/valkey:8-alpine
+    container_name: n8n-redis
+    restart: always
+    command: valkey-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  n8n-main:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n-main
+    restart: always
+    command: n8n start
+    environment:
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - EXECUTIONS_MODE=queue
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB:-n8n_db}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER:-n8n_user}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - N8N_PORT=5678
+      - N8N_WEBHOOK_URL=https://${DOMAIN_NAME}/
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./temp-media:/temp-media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  n8n-worker:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n-worker
+    restart: always
+    command: n8n worker
+    environment:
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - EXECUTIONS_MODE=queue
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB:-n8n_db}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER:-n8n_user}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./temp-media:/temp-media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: n8n-caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - n8n-main
+    deploy:
+      resources:
+        limits:
+          memory: 100M
+
+volumes:
+  db_data:
+  redis_data:
+  n8n_data:
+  caddy_data:
+  caddy_config:

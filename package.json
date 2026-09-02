@@ -1,0 +1,28 @@
+{
+  "name": "prensi-bot-2026",
+  "version": "1.0.0",
+  "description": "Bot de WhatsApp para recepción de fotos/vídeos institucionales de Prensa con subida a Google Drive y gestión en cola",
+  "main": "app.js",
+  "type": "module",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "node --watch app.js"
+  },
+  "keywords": [
+    "whatsapp",
+    "baileys",
+    "google-drive",
+    "bot",
+    "n8n"
+  ],
+  "author": "Prensa Team",
+  "license": "ISC",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "dotenv": "^16.4.5",
+    "googleapis": "^144.0.0",
+    "ioredis": "^5.4.1",
+    "node-cron": "^3.0.3",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

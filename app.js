@@ -1,0 +1,453 @@
+import makeWASocket, { 
+    useMultiFileAuthState, 
+    downloadMediaMessage, 
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+    Browsers
+} from "@whiskeysockets/baileys";
+import { google } from "googleapis";
+import fsPromises from "fs/promises";
+import { existsSync, createReadStream, createWriteStream } from "fs";
+import cron from "node-cron";
+import QRCode from "qrcode-terminal";
+import { Readable } from "stream";
+import http from "http";
+
+// Cargar variables de entorno desde .env si están presentes
+if (!process.env.PARENT_FOLDER_ID) {
+    try {
+        const { default: dotenv } = await import("dotenv");
+        dotenv.config();
+    } catch (e) {
+        // dotenv no está instalado y no se inició con --env-file, se usarán fallbacks
+    }
+}
+
+const SECRET_PATH = "./client_secret.json";
+const TOKEN_PATH = "./token.json";
+const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID || "1Q9Oi0PNtdMugEfYyB7Bn3m5poD0orB9e";
+const REPORTE_GROUP_JID = process.env.REPORTE_GROUP_JID || "120363250224178634@g.us"; // Grupo oficial de Prensa
+const ADMIN_NUMBER_JID = process.env.ADMIN_NUMBER_JID || "5493624408292@s.whatsapp.net"; // Número personal del administrador
+const PORT = process.env.PORT || 3000;
+
+const WELCOME_MESSAGE = `¡Hola! Te damos la bienvenida a la línea de Prensa y Comunicación de la DRE X-A y X-B. 📸
+
+Te recordamos que este número solo recibe y almacena material fotográfico o audiovisual para las redes sociales institucionales. No procesamos consultas administrativas, reclamos ni trámites generales.
+
+Si vas a enviarnos las fotos de tu escuela, ¡aguardamos el envío! Si es por otro trámite, por favor comunicate por las vías correspondientes. ¡Muchas gracias!`;
+
+const bienvenidaEnviada = new Map(); // JID -> timestamp de último envío de bienvenida
+
+let drive;
+let enviosNuevos = 0;
+const COUNTER_PATH = "./counter.json";
+
+async function cargarContador() {
+    if (existsSync(COUNTER_PATH)) {
+        try {
+            const raw = await fsPromises.readFile(COUNTER_PATH, "utf8");
+            const data = JSON.parse(raw);
+            enviosNuevos = data.count || 0;
+            console.log(`💾 Contador de envíos cargado: ${enviosNuevos}`);
+        } catch (e) {
+            console.error("❌ Error al cargar counter.json:", e);
+        }
+    }
+}
+
+async function guardarContador() {
+    try {
+        await fsPromises.writeFile(COUNTER_PATH, JSON.stringify({ count: enviosNuevos }), "utf8");
+    } catch (e) {
+        console.error("❌ Error al guardar counter.json:", e);
+    }
+}
+
+// Cargar el contador al iniciar
+await cargarContador();
+
+let sockGlobal = null;
+const sesiones = new Map();
+const TEMP_DIR = "./temp";
+
+async function initGoogleDrive() {
+    if (!existsSync(SECRET_PATH) || !existsSync(TOKEN_PATH)) {
+        console.error("❌ Faltan client_secret.json o token.json.");
+        return false;
+    }
+    try {
+        const credentialsRaw = await fsPromises.readFile(SECRET_PATH, "utf8");
+        const credentials = JSON.parse(credentialsRaw);
+        const { client_secret, client_id, redirect_uris } = credentials.installed;
+        const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
+        const tokenRaw = await fsPromises.readFile(TOKEN_PATH, "utf8");
+        const token = JSON.parse(tokenRaw);
+        oAuth2Client.setCredentials(token);
+        drive = google.drive({ version: "v3", auth: oAuth2Client });
+        console.log("✅ Google Drive (OAuth2) conectado");
+        return true;
+    } catch (e) {
+        console.error("❌ Error conectando a Drive:", e.message);
+        return false;
+    }
+}
+
+async function buscarCarpeta(nombreCarpeta) {
+    const response = await drive.files.list({
+        q: `mimeType='application/vnd.google-apps.folder' and name='${nombreCarpeta}' and '${PARENT_FOLDER_ID}' in parents and trashed=false`,
+        fields: "files(id, webViewLink)",
+        spaces: "drive"
+    });
+    if (response.data.files && response.data.files.length > 0) {
+        return { id: response.data.files[0].id, link: response.data.files[0].webViewLink };
+    }
+    return null;
+}
+
+async function crearCarpeta(nombreCarpeta) {
+    const response = await drive.files.create({
+        requestBody: { name: nombreCarpeta, mimeType: "application/vnd.google-apps.folder", parents: [PARENT_FOLDER_ID] },
+        fields: "id, webViewLink",
+    });
+    return { id: response.data.id, link: `https://drive.google.com/drive/folders/${response.data.id}` };
+}
+
+/**
+ * Subida eficiente mediante Stream directo (sin duplicar buffers en memoria)
+ */
+async function subirArchivoStream(fileStreamOrBuffer, nombreArchivo, mimeType, folderId) {
+    let bodyStream;
+    if (typeof fileStreamOrBuffer?.pipe === "function") {
+        bodyStream = fileStreamOrBuffer;
+    } else {
+        bodyStream = new Readable();
+        bodyStream.push(fileStreamOrBuffer);
+        bodyStream.push(null);
+    }
+
+    const response = await drive.files.create({
+        requestBody: { name: nombreArchivo, parents: [folderId] },
+        media: { mimeType, body: bodyStream },
+        fields: "id",
+    });
+    return response.data.id;
+}
+
+function obtenerMensajeInterno(message) {
+    if (!message) return null;
+    if (message.ephemeralMessage) {
+        return obtenerMensajeInterno(message.ephemeralMessage.message);
+    }
+    if (message.viewOnceMessage) {
+        return obtenerMensajeInterno(message.viewOnceMessage.message);
+    }
+    if (message.viewOnceMessageV2) {
+        return obtenerMensajeInterno(message.viewOnceMessageV2.message);
+    }
+    if (message.viewOnceMessageV2Extension) {
+        return obtenerMensajeInterno(message.viewOnceMessageV2Extension.message);
+    }
+    if (message.documentWithCaptionMessage) {
+        return obtenerMensajeInterno(message.documentWithCaptionMessage.message);
+    }
+    return message;
+}
+
+async function iniciarBot() {
+    console.log("🚀 Iniciando bot...");
+    await initGoogleDrive();
+    
+    if (!existsSync(TEMP_DIR)) {
+        await fsPromises.mkdir(TEMP_DIR, { recursive: true });
+    }
+    
+    const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
+    const { version } = await fetchLatestBaileysVersion();
+    
+    const sock = makeWASocket({ 
+        version,
+        auth: state, 
+        printQRInTerminal: false, 
+        browser: Browsers.ubuntu("Chrome")
+    });
+    
+    sockGlobal = sock;
+
+    sock.ev.on("connection.update", (update) => {
+        const { connection, qr, lastDisconnect } = update;
+        if (qr) { console.log("\n📱 ESCANEA ESTE QR:\n"); QRCode.generate(qr, { small: true }); }
+        if (connection === "open") console.log("✅ Conectado a WhatsApp");
+        if (connection === "close") {
+            const statusCode = (lastDisconnect?.error)?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason?.loggedOut;
+            if (shouldReconnect) setTimeout(iniciarBot, 5000);
+        }
+    });
+    
+    sock.ev.on("creds.update", saveCreds);
+    
+    sock.ev.on("messages.upsert", async ({ messages, type }) => {
+        if (type !== "notify") return;
+
+        for (const msg of messages) {
+            if (!msg.message || msg.key.fromMe) continue;
+            
+            const msgTimestamp = typeof msg.messageTimestamp === "number" 
+                ? msg.messageTimestamp 
+                : (msg.messageTimestamp?.low || 0);
+            const ahoraSec = Math.floor(Date.now() / 1000);
+            if (msgTimestamp > 0 && (ahoraSec - msgTimestamp) > 300) {
+                console.log(`[MENSAJE] Omitiendo mensaje antiguo (recibido hace ${ahoraSec - msgTimestamp} s)`);
+                continue;
+            }
+
+            const numero = msg.key.remoteJid;
+            
+            if (!numero.endsWith("@s.whatsapp.net")) {
+                if (numero.endsWith("@g.us")) {
+                    console.log(`[GRUPO DETECTADO] ID: ${numero}`);
+                }
+                continue;
+            }
+
+            const messageContent = obtenerMensajeInterno(msg.message);
+            if (!messageContent) continue;
+
+            const messageKeys = Object.keys(messageContent);
+            const validKeys = [
+                "conversation", "extendedTextMessage", "imageMessage", "videoMessage",
+                "audioMessage", "documentMessage", "stickerMessage", "contactMessage",
+                "contactsArrayMessage", "locationMessage", "liveLocationMessage",
+                "interactiveResponseMessage", "buttonsResponseMessage", "listResponseMessage",
+                "templateButtonReplyMessage"
+            ];
+            const hasValidKey = messageKeys.some(key => validKeys.includes(key));
+            if (!hasValidKey) continue;
+
+            const isDocMedia = messageContent.documentMessage && (
+                messageContent.documentMessage.mimetype?.startsWith("image/") ||
+                messageContent.documentMessage.mimetype?.startsWith("video/")
+            );
+            const isImage = !!messageContent.imageMessage || (messageContent.documentMessage?.mimetype?.startsWith("image/"));
+            const esArchivo = isImage || !!messageContent.videoMessage || isDocMedia;
+
+            const texto = messageContent.conversation || 
+                          messageContent.extendedTextMessage?.text || 
+                          messageContent.imageMessage?.caption || 
+                          messageContent.videoMessage?.caption || 
+                          messageContent.documentMessage?.caption ||
+                          "";
+            const tipoMsg = messageKeys.find(key => validKeys.includes(key)) || "desconocido";
+
+            console.log(`[MENSAJE] Recibido de ${numero.split('@')[0]} - Tipo: ${tipoMsg} - Texto: "${texto}" - Es archivo: ${!!esArchivo}`);
+            
+            try {
+                if (!sesiones.has(numero)) {
+                    console.log(`[SESION] Creando nueva sesión para ${numero.split('@')[0]}`);
+                    sesiones.set(numero, { 
+                        archivosLocales: [],
+                        timeoutId: null,
+                        esRecap: false,
+                        activeDownloads: 0
+                    });
+                }
+
+                const sesion = sesiones.get(numero);
+
+                if (texto.toLowerCase().includes("#recap")) {
+                    console.log(`[SESION] Activado modo recap para ${numero.split('@')[0]}`);
+                    sesion.esRecap = true;
+                }
+
+                if (sesion.timeoutId) {
+                    console.log(`[SESION] Cancelando timeout anterior para ${numero.split('@')[0]}`);
+                    clearTimeout(sesion.timeoutId);
+                    sesion.timeoutId = null;
+                }
+
+                if (esArchivo) {
+                    sesion.activeDownloads++;
+                    console.log(`[DESCARGA] Iniciando descarga de archivo de ${numero.split('@')[0]} (Descargas activas: ${sesion.activeDownloads})`);
+                    try {
+                        const buffer = await downloadMediaMessage(msg, "buffer", {});
+                        let ext = isImage ? ".jpg" : ".mp4";
+                        let mime = isImage ? "image/jpeg" : "video/mp4";
+                        if (messageContent.documentMessage) {
+                            mime = messageContent.documentMessage.mimetype || mime;
+                            const docName = messageContent.documentMessage.fileName || "";
+                            const matchExt = docName.match(/\.[a-zA-Z0-9]+$/);
+                            if (matchExt) ext = matchExt[0];
+                        }
+                        const fileName = `archivo_${Date.now()}_${Math.random().toString(36).substring(2, 8)}${ext}`;
+                        const filePath = `${TEMP_DIR}/${fileName}`;
+                        
+                        await fsPromises.writeFile(filePath, buffer);
+                        
+                        sesion.archivosLocales.push({
+                            path: filePath,
+                            name: fileName,
+                            mimeType: mime
+                        });
+                        console.log(`[DESCARGA] Guardado archivo local: ${fileName}`);
+                    } catch (downloadErr) {
+                        console.error("[DESCARGA] Error al descargar media de whatsapp:", downloadErr);
+                    } finally {
+                        sesion.activeDownloads--;
+                        console.log(`[DESCARGA] Descarga finalizada para ${numero.split('@')[0]} (Descargas activas: ${sesion.activeDownloads})`);
+                    }
+                }
+
+                if (sesion.activeDownloads === 0) {
+                    if (sesion.archivosLocales.length > 0) {
+                        console.log(`[SESION] Programando subida a Drive en 3 minutos para ${numero.split('@')[0]} (${sesion.archivosLocales.length} archivos en espera)`);
+                        sesion.timeoutId = setTimeout(async () => {
+                            try {
+                                console.log(`[DRIVE] Iniciando proceso de subida para ${numero.split('@')[0]}`);
+                                sesiones.delete(numero);
+
+                                const now = new Date();
+                                const year = now.getFullYear();
+                                const month = String(now.getMonth() + 1).padStart(2, '0');
+                                const day = String(now.getDate()).padStart(2, '0');
+                                const numLimpio = numero.split('@')[0];
+                                let carpetaName = `${year}${month}${day}_${numLimpio}`;
+                                
+                                if (sesion.esRecap) {
+                                    carpetaName = `${year}${month}${day}_Recap`;
+                                }
+                                
+                                let carpeta = await buscarCarpeta(carpetaName);
+                                if (!carpeta) {
+                                    console.log(`[DRIVE] Creando carpeta: ${carpetaName}`);
+                                    carpeta = await crearCarpeta(carpetaName);
+                                }
+                                
+                                for (const archivo of sesion.archivosLocales) {
+                                    if (existsSync(archivo.path)) {
+                                        console.log(`[DRIVE] Subiendo archivo a Drive (Streaming): ${archivo.name}`);
+                                        const fileStream = createReadStream(archivo.path);
+                                        await subirArchivoStream(fileStream, archivo.name, archivo.mimeType, carpeta.id);
+                                        await fsPromises.unlink(archivo.path);
+                                        console.log(`[DRIVE] Archivo subido y eliminado localmente: ${archivo.name}`);
+                                    }
+                                }
+                                
+                                enviosNuevos++;
+                                await guardarContador();
+                                console.log(`[DRIVE] Subida completada con éxito para ${numero.split('@')[0]}. Enviando mensaje de agradecimiento.`);
+                                await sock.sendMessage(numero, { text: "Gracias por compartirlo con el equipo de Prensa." });
+                            } catch (err) {
+                                console.error("[DRIVE] Error al subir a drive:", err);
+                                await sock.sendMessage(numero, { text: "Gracias por compartirlo con el equipo de Prensa." });
+                                try {
+                                    await sock.sendMessage(ADMIN_NUMBER_JID, { text: `⚠️ *Error de Subida a Drive*\nFalló la subida del material enviado por: wa.me/${numero.split('@')[0]}\nRevisa el log para más detalles.` });
+                                } catch (notifyErr) {
+                                    console.error("Error al notificar al admin:", notifyErr);
+                                }
+                            }
+                        }, 180000);
+                    } else {
+                        const esComandoRecap = texto.toLowerCase().includes("#recap");
+                        if (!esComandoRecap) {
+                            const ahora = Date.now();
+                            const ultimaBienvenida = bienvenidaEnviada.get(numero) || 0;
+                            const COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+                            if (ahora - ultimaBienvenida > COOLDOWN_MS) {
+                                console.log(`[BIENVENIDA] Enviando mensaje de bienvenida a ${numero.split('@')[0]}`);
+                                bienvenidaEnviada.set(numero, ahora);
+                                await sock.sendMessage(numero, { text: WELCOME_MESSAGE });
+                            } else {
+                                console.log(`[BIENVENIDA] Omitiendo bienvenida para ${numero.split('@')[0]} por cooldown`);
+                            }
+                        } else {
+                            console.log(`[COMANDO] Recibido #recap de ${numero.split('@')[0]}`);
+                        }
+                        sesiones.delete(numero);
+                    }
+                }
+
+            } catch (e) {
+                console.error(e);
+                try {
+                    await sock.sendMessage(ADMIN_NUMBER_JID, { text: `⚠️ *Error de Procesamiento*\nOcurrió un error al procesar un mensaje de: wa.me/${numero.split('@')[0]}` });
+                } catch (notifyErr) {
+                    console.error("Error al notificar al admin:", notifyErr);
+                }
+            }
+        }
+    });
+}
+
+cron.schedule('0 8-19 * * 1-5', async () => {
+    if (enviosNuevos > 0 && sockGlobal) {
+        const enviosAEnviar = enviosNuevos;
+        try {
+            const localHourStr = new Date().toLocaleString("en-US", { timeZone: "America/Argentina/Buenos_Aires", hour: "numeric", hour12: false });
+            const currentHour = parseInt(localHourStr, 10);
+            
+            let reportText = "";
+            if (currentHour === 8) {
+                reportText = `🤖 *Reporte Prensi Bot*\n\nEn el período fuera de horario (desde ayer a las 19:00) he recibido material nuevo de ${enviosAEnviar} sesión(es) de WhatsApp. Revisar el chat o la carpeta de Drive.`;
+            } else {
+                reportText = `🤖 *Reporte Prensi Bot*\n\nEn la última hora he recibido material nuevo de ${enviosAEnviar} sesión(es) de WhatsApp. Revisar el chat o la carpeta de Drive.`;
+            }
+            
+            await sockGlobal.sendMessage(REPORTE_GROUP_JID, { text: reportText });
+            console.log(`[CRON] Reporte enviado (Hora: ${currentHour}). Envios reseteados de ${enviosAEnviar} a 0.`);
+        } catch (error) {
+            console.error("[CRON] Error enviando reporte:", error);
+        } finally {
+            enviosNuevos = 0;
+            await guardarContador();
+        }
+    }
+}, {
+    timezone: "America/Argentina/Buenos_Aires"
+});
+
+function iniciarHttpServer() {
+    const server = http.createServer((req, res) => {
+        if (req.method === "POST" && req.url === "/send-message") {
+            let body = "";
+            req.on("data", chunk => {
+                body += chunk.toString();
+            });
+            req.on("end", async () => {
+                try {
+                    const data = JSON.parse(body);
+                    const message = data.message;
+                    if (message && sockGlobal) {
+                        await sockGlobal.sendMessage(ADMIN_NUMBER_JID, { text: message });
+                        res.writeHead(200, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify({ status: "success" }));
+                        return;
+                    }
+                } catch (e) {
+                    console.error("Error processing HTTP message request:", e);
+                }
+                res.writeHead(400, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ status: "error", message: "Invalid request" }));
+            });
+        } else {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ status: "error", message: "Not Found" }));
+        }
+    });
+
+    server.listen(PORT, "127.0.0.1", () => {
+        console.log(`🚀 HTTP Server listening on http://127.0.0.1:${PORT} (Internal Only)`);
+    });
+}
+
+async function apagarLimpio(signal) {
+    console.log(`\n🛑 Recibida señal ${signal}. Guardando contador y cerrando servidor...`);
+    await guardarContador();
+    process.exit(0);
+}
+
+process.on("SIGINT", () => apagarLimpio("SIGINT"));
+process.on("SIGTERM", () => apagarLimpio("SIGTERM"));
+
+iniciarBot().catch(console.error);
+iniciarHttpServer();
