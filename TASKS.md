@@ -22,6 +22,12 @@ Este archivo sirve como nexo de comunicación entre **Gemini (Navegador)**, **Cl
 
 ## ✅ Tareas Completadas
 
+- [x] **[2026-09-04] Reactivación del Script Automatizado de Instancia OCI ARM (6 GB RAM)**
+  - **Detalle**: Se reactivó el proceso `oci-creator` bajo PM2 (`/home/ubuntu/oci-create-instance/run.sh`).
+  - **Estado y Operación**: El script consulta la API de Oracle Cloud Infrastructure cada 30 segundos solicitando la creación de la VM Always Free ARM (`VM.Standard.A1.Flex`, 1 OCPU, 6 GB RAM) en la región de Santiago.
+  - **Integración**: Cuando Oracle asigne la capacidad, la script invocará el endpoint local `/send-message` (puerto 3000) enviando una notificación automática por WhatsApp al administrador con los detalles de la nueva VM creada.
+  - **Despliegue**: Proceso iniciado como ID 3 en PM2 (`oci-creator`), estado guardado con `pm2 save`.
+
 - [x] **[2026-09-04] Verificación Post-Fix: Deduplicación y Estabilidad de Sync**
   - **Deduplicación de Mensajes (Paso 1)**: Implementado `processedMessageIds` (Map en memoria con TTL de 1 hora) y la función `esMensajeDuplicado(msg.key.id)`. Garantiza que ningún mensaje se procese dos veces (tanto para eventos `type === "notify"` como `type === "append"`).
   - **Monitoreo de RAM y Sync (Paso 2)**: Se monitoreó el proceso en el VPS. El consumo de RAM se mantiene súper estable en `66.5 MiB` de Heap (muy lejos del límite `max_memory_restart: 300M`), con latencia del Event Loop en `0.45 ms`.
