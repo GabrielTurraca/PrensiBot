@@ -22,6 +22,15 @@ Este archivo sirve como nexo de comunicación entre **Gemini (Navegador)**, **Cl
 
 ## ✅ Tareas Completadas
 
+- [x] **[2026-09-04] Visibilidad y mitigación de pérdida de mensajes por reconexión de socket**
+  - **Origen / Contexto**: Ocurrió un microcorte de red de WhatsApp el 03/09/2026 entre las 17:43:50 y 17:43:56 ART.
+  - **Descubrimiento Principal**: Se detectó que `app.js` descartaba mensajes con `type !== "notify"`. Al reconectar Baileys, los mensajes offline/pendientes llegan con `type === "append"`, los cuales eran ignorados anteriormente.
+  - **Cambios Aplicados**:
+    - **Paso 1 (Logging Persistente)**: Implementado archivo de log dedicado `./connection_events.log` y función `registrarEventoConexion()` que registra timestamps de cortes, reconexiones y cantidad de notificaciones offline pendientes.
+    - **Paso 2 (Configuración de Baileys y Filtro de Mensajes)**: Se configuró `markOnlineOnConnect: true`, `syncFullHistory: false`, `shouldSyncHistoryMessage: () => true` en `makeWASocket()`. En `messages.upsert`, se habilitó el procesamiento de `type === "notify"` Y `type === "append"`, y se amplió el umbral de descarte de mensajes antiguos a 15 minutos (900s).
+    - **Paso 3 (Alertas Proactivas al Admin)**: Configurado `CONNECTION_GAP_ALERT_SECONDS` (por defecto 3 segundos). Ante desconexiones de socket seguidas de reconexión con duración `>= threshold`, se envía un mensaje de alerta proactivo a `ADMIN_NUMBER_JID` detallando hora del corte, hora de reconexión, duración y notificaciones pendientes.
+  - **Despliegue y Sincronización**: Desplegado en VPS (`prensi-bot-server`), PM2 reiniciado, verificado `connection_events.log` y sincronizado en GitHub (`main`).
+
 - [x] **[2026-09-02] Hardening de Resiliencia y Recursos para VPS (`VM.Standard.E2.1.Micro / ARM`)**
   - **Sugerido por**: Claude (Navegador)
   - **Resultados de Auditoría (Paso 0)**:

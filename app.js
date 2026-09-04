@@ -30,6 +30,19 @@ const REPORTE_GROUP_JID = process.env.REPORTE_GROUP_JID || "120363250224178634@g
 const ADMIN_NUMBER_JID = process.env.ADMIN_NUMBER_JID || "5493624408292@s.whatsapp.net"; // Número personal del administrador
 const PORT = process.env.PORT || 3000;
 const MAX_FILE_SIZE_MB = parseInt(process.env.MAX_FILE_SIZE_MB || "100", 10);
+const CONNECTION_GAP_ALERT_SECONDS = parseInt(process.env.CONNECTION_GAP_ALERT_SECONDS || "3", 10);
+const CONNECTION_LOG_PATH = "./connection_events.log";
+
+async function registrarEventoConexion(texto) {
+    const timestamp = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+    const linea = `[${timestamp}] ${texto}\n`;
+    console.log(`[CONEXION] ${texto}`);
+    try {
+        await fsPromises.appendFile(CONNECTION_LOG_PATH, linea, "utf8");
+    } catch (e) {
+        console.error("❌ Error escribiendo en connection_events.log:", e);
+    }
+}
 
 const WELCOME_MESSAGE = `¡Hola! Te damos la bienvenida a la línea de Prensa y Comunicación de la DRE X-A y X-B. 📸
 
@@ -208,6 +221,8 @@ function obtenerMensajeInterno(message) {
     return message;
 }
 
+let disconnectTimestamp = 0;
+
 async function iniciarBot() {
     console.log("🚀 Iniciando bot...");
     await initGoogleDrive();
@@ -225,26 +240,67 @@ async function iniciarBot() {
         version,
         auth: state, 
         printQRInTerminal: false, 
-        browser: Browsers.ubuntu("Chrome")
+        browser: Browsers.ubuntu("Chrome"),
+        markOnlineOnConnect: true,
+        syncFullHistory: false,
+        shouldSyncHistoryMessage: () => true
     });
     
     sockGlobal = sock;
 
-    sock.ev.on("connection.update", (update) => {
-        const { connection, qr, lastDisconnect } = update;
+    sock.ev.on("connection.update", async (update) => {
+        const { connection, qr, lastDisconnect, receivedPendingNotifications } = update;
         if (qr) { console.log("\n📱 ESCANEA ESTE QR:\n"); QRCode.generate(qr, { small: true }); }
-        if (connection === "open") console.log("✅ Conectado a WhatsApp");
+        
         if (connection === "close") {
+            disconnectTimestamp = Date.now();
             const statusCode = (lastDisconnect?.error)?.output?.statusCode;
+            const errorMsg = lastDisconnect?.error?.message || "Desconexión de socket de WhatsApp";
+            await registrarEventoConexion(`🔴 Desconexión de socket (Código: ${statusCode || "N/A"} - Error: ${errorMsg})`);
+
             const shouldReconnect = statusCode !== DisconnectReason?.loggedOut;
             if (shouldReconnect) setTimeout(iniciarBot, 5000);
+        }
+
+        if (connection === "open") {
+            const ahora = Date.now();
+            let gapSeconds = 0;
+            if (disconnectTimestamp > 0) {
+                gapSeconds = Math.floor((ahora - disconnectTimestamp) / 1000);
+            }
+            
+            const pendingInfo = receivedPendingNotifications === false 
+                ? "0 (Sin notificaciones pendientes)" 
+                : (receivedPendingNotifications ? "Sí (Hay notificaciones pendientes)" : "Completada");
+
+            await registrarEventoConexion(`🟢 Conexión de WhatsApp restablecida. Duración del corte: ${gapSeconds}s. Notificaciones offline: ${pendingInfo}`);
+
+            if (disconnectTimestamp > 0 && gapSeconds >= CONNECTION_GAP_ALERT_SECONDS) {
+                const horaCorte = new Date(disconnectTimestamp).toLocaleTimeString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+                const horaReconexion = new Date(ahora).toLocaleTimeString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+                
+                const alertaMsg = `⚠️ *Alerta de Reconexión de Socket*\n\n` +
+                    `• *Inicio del corte*: ${horaCorte}\n` +
+                    `• *Reconexión*: ${horaReconexion}\n` +
+                    `• *Duración del corte*: ${gapSeconds} segundo(s)\n` +
+                    `• *Notificaciones offline*: ${pendingInfo}\n\n` +
+                    `Revisá si algún usuario envió material durante este lapso.`;
+
+                try {
+                    await sock.sendMessage(ADMIN_NUMBER_JID, { text: alertaMsg });
+                } catch (notifyErr) {
+                    console.error("Error al enviar alerta de reconexión al admin:", notifyErr);
+                }
+            }
+            disconnectTimestamp = 0;
         }
     });
     
     sock.ev.on("creds.update", saveCreds);
     
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
-        if (type !== "notify") return;
+        // Aceptar tanto mensajes en tiempo real ("notify") como recuperados tras reconexión ("append")
+        if (type !== "notify" && type !== "append") return;
 
         for (const msg of messages) {
             if (!msg.message || msg.key.fromMe) continue;
@@ -253,7 +309,8 @@ async function iniciarBot() {
                 ? msg.messageTimestamp 
                 : (msg.messageTimestamp?.low || 0);
             const ahoraSec = Math.floor(Date.now() / 1000);
-            if (msgTimestamp > 0 && (ahoraSec - msgTimestamp) > 300) {
+            // Umbral de 15 minutos (900s) para permitir mensajes en cola recibidos tras reconexión
+            if (msgTimestamp > 0 && (ahoraSec - msgTimestamp) > 900) {
                 console.log(`[MENSAJE] Omitiendo mensaje antiguo (recibido hace ${ahoraSec - msgTimestamp} s)`);
                 continue;
             }
