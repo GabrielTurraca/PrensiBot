@@ -51,6 +51,28 @@ Te recordamos que este número solo recibe y almacena material fotográfico o au
 Si vas a enviarnos las fotos de tu escuela, ¡aguardamos el envío! Si es por otro trámite, por favor comunicate por las vías correspondientes. ¡Muchas gracias!`;
 
 const bienvenidaEnviada = new Map(); // JID -> timestamp de último envío de bienvenida
+const processedMessageIds = new Map(); // msgId -> timestamp (TTL 1 hora)
+
+function esMensajeDuplicado(msgId) {
+    if (!msgId) return false;
+    const ahora = Date.now();
+    
+    // Mantenimiento de memoria: limpiar IDs con más de 1 hora (3600000 ms)
+    if (processedMessageIds.size > 500) {
+        for (const [id, time] of processedMessageIds.entries()) {
+            if (ahora - time > 3600000) {
+                processedMessageIds.delete(id);
+            }
+        }
+    }
+
+    if (processedMessageIds.has(msgId)) {
+        return true;
+    }
+
+    processedMessageIds.set(msgId, ahora);
+    return false;
+}
 
 let drive;
 let enviosNuevos = 0;
@@ -304,6 +326,12 @@ async function iniciarBot() {
 
         for (const msg of messages) {
             if (!msg.message || msg.key.fromMe) continue;
+            
+            const msgId = msg.key.id;
+            if (esMensajeDuplicado(msgId)) {
+                console.log(`[MENSAJE DUPLICADO] Omitiendo mensaje ya procesado (ID: ${msgId})`);
+                continue;
+            }
             
             const msgTimestamp = typeof msg.messageTimestamp === "number" 
                 ? msg.messageTimestamp 

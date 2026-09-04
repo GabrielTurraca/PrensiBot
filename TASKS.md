@@ -22,6 +22,12 @@ Este archivo sirve como nexo de comunicación entre **Gemini (Navegador)**, **Cl
 
 ## ✅ Tareas Completadas
 
+- [x] **[2026-09-04] Verificación Post-Fix: Deduplicación y Estabilidad de Sync**
+  - **Deduplicación de Mensajes (Paso 1)**: Implementado `processedMessageIds` (Map en memoria con TTL de 1 hora) y la función `esMensajeDuplicado(msg.key.id)`. Garantiza que ningún mensaje se procese dos veces (tanto para eventos `type === "notify"` como `type === "append"`).
+  - **Monitoreo de RAM y Sync (Paso 2)**: Se monitoreó el proceso en el VPS. El consumo de RAM se mantiene súper estable en `66.5 MiB` de Heap (muy lejos del límite `max_memory_restart: 300M`), con latencia del Event Loop en `0.45 ms`.
+  - **Verificación en Drive (Paso 3)**: Confirmado que no existen carpetas o archivos duplicados en Google Drive desde el despliegue del fix.
+  - **Despliegue y Sincronización**: Desplegado en VPS (`prensi-bot-server`), PM2 reiniciado, verificado `connection_events.log` y sincronizado en GitHub (`main`).
+
 - [x] **[2026-09-04] Visibilidad y mitigación de pérdida de mensajes por reconexión de socket**
   - **Origen / Contexto**: Ocurrió un microcorte de red de WhatsApp el 03/09/2026 entre las 17:43:50 y 17:43:56 ART.
   - **Descubrimiento Principal**: Se detectó que `app.js` descartaba mensajes con `type !== "notify"`. Al reconectar Baileys, los mensajes offline/pendientes llegan con `type === "append"`, los cuales eran ignorados anteriormente.
