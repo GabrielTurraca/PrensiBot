@@ -265,7 +265,8 @@ async function iniciarBot() {
         browser: Browsers.ubuntu("Chrome"),
         markOnlineOnConnect: true,
         syncFullHistory: false,
-        shouldSyncHistoryMessage: () => true
+        shouldSyncHistoryMessage: () => true,
+        getMessage: async () => ({ conversation: "" })
     });
     
     sockGlobal = sock;
