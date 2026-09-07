@@ -22,7 +22,10 @@ Este archivo sirve como nexo de comunicación entre **Gemini (Navegador)**, **Cl
 
 ## ✅ Tareas Completadas
 
-- [x] **[2026-09-07] Reducción de Ruido en Alertas de Socket y Diagnóstico de Desencriptación (`Bad MAC`)**
+- [x] **[2026-09-07] Solución Definitiva de Desencriptación (`Bad MAC Error`) y Recuperación de Sesión de Contactos**
+  - **Eliminación de Sesiones Corruptas**: Se eliminaron los archivos obsoletos `session-*.json` del directorio `auth_info/` en el VPS, forzando a Baileys a renegociar claves limpias de sesión por contacto sin perder la vinculación del QR (`creds.json`).
+  - **Manejo de Reintentos de Protocolo Signal**: Se agregó el callback `getMessage: async () => ({ conversation: "" })` en `makeWASocket()` (`app.js`) para procesar adecuadamente reintentos de mensajes y renegociaciones de prekeys del protocolo Signal.
+  - **Despliegue y Estado**: `app.js` subido al VPS (`prensi-bot-server`), PM2 reiniciado (`prensi-bot`), confirmada reconexión exitosa a WhatsApp en estado online.
   - **Reducción de Ruido de Alertas**:
     - Se elevó `CONNECTION_GAP_ALERT_SECONDS` de 3 a 20 segundos por defecto.
     - Se modificó la condición en `connection.update` para alertar al administrador ÚNICAMENTE si la duración del corte es `>= 20s` O si el estado de notificaciones offline indica `false`/`0` (notificaciones incompletas). Las reconexiones normales de 5-7 segundos con sync completado ya no enviarán mensajes al admin, pero se siguen guardando en `./connection_events.log`.
