@@ -329,7 +329,6 @@ async function iniciarBot() {
         if (type !== "notify" && type !== "append") return;
 
         for (const msg of messages) {
-            console.log(`[UPSERT EVENT] type: ${type}, fromMe: ${msg.key?.fromMe}, remoteJid: ${msg.key?.remoteJid}, hasMessage: ${!!msg.message}`);
             if (!msg.message || msg.key.fromMe) continue;
             
             const msgId = msg.key.id;
