@@ -22,6 +22,15 @@ Este archivo sirve como nexo de comunicación entre **Gemini (Navegador)**, **Cl
 
 ## ✅ Tareas Completadas
 
+- [x] **[2026-09-07] Reducción de Ruido en Alertas de Socket y Diagnóstico de Desencriptación (`Bad MAC`)**
+  - **Reducción de Ruido de Alertas**:
+    - Se elevó `CONNECTION_GAP_ALERT_SECONDS` de 3 a 20 segundos por defecto.
+    - Se modificó la condición en `connection.update` para alertar al administrador ÚNICAMENTE si la duración del corte es `>= 20s` O si el estado de notificaciones offline indica `false`/`0` (notificaciones incompletas). Las reconexiones normales de 5-7 segundos con sync completado ya no enviarán mensajes al admin, pero se siguen guardando en `./connection_events.log`.
+  - **Diagnóstico Crítico de Subida a Drive (`Bad MAC Error`)**:
+    - **Causa raíz hallada en los logs del VPS**: 1.023 errores de `Session error: Error: Bad MAC Error: Bad MAC` en `prensi-bot-error.log`.
+    - **Explicación**: El protocolo Signal en Baileys desincronizó sus claves de sesión guardadas en `auth_info/` por la acumulación de archivos `session-*.json` antiguos. Esto impedía a Baileys desencriptar las imágenes/videos entrantes privados de los usuarios, descartándolos en la capa criptográfica antes de llegar a `messages.upsert`.
+  - **Despliegue y Sincronización**: `app.js` actualizado, desplegado en VPS (`prensi-bot-server`), PM2 reiniciado y sincronizado en GitHub (`main`).
+
 - [x] **[2026-09-04] Reactivación del Script Automatizado de Instancia OCI ARM (6 GB RAM)**
   - **Detalle**: Se reactivó el proceso `oci-creator` bajo PM2 (`/home/ubuntu/oci-create-instance/run.sh`).
   - **Estado y Operación**: El script consulta la API de Oracle Cloud Infrastructure cada 30 segundos solicitando la creación de la VM Always Free ARM (`VM.Standard.A1.Flex`, 1 OCPU, 6 GB RAM) en la región de Santiago.

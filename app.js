@@ -30,7 +30,7 @@ const REPORTE_GROUP_JID = process.env.REPORTE_GROUP_JID || "120363250224178634@g
 const ADMIN_NUMBER_JID = process.env.ADMIN_NUMBER_JID || "5493624408292@s.whatsapp.net"; // Número personal del administrador
 const PORT = process.env.PORT || 3000;
 const MAX_FILE_SIZE_MB = parseInt(process.env.MAX_FILE_SIZE_MB || "100", 10);
-const CONNECTION_GAP_ALERT_SECONDS = parseInt(process.env.CONNECTION_GAP_ALERT_SECONDS || "3", 10);
+const CONNECTION_GAP_ALERT_SECONDS = parseInt(process.env.CONNECTION_GAP_ALERT_SECONDS || "20", 10);
 const CONNECTION_LOG_PATH = "./connection_events.log";
 
 async function registrarEventoConexion(texto) {
@@ -297,7 +297,10 @@ async function iniciarBot() {
 
             await registrarEventoConexion(`🟢 Conexión de WhatsApp restablecida. Duración del corte: ${gapSeconds}s. Notificaciones offline: ${pendingInfo}`);
 
-            if (disconnectTimestamp > 0 && gapSeconds >= CONNECTION_GAP_ALERT_SECONDS) {
+            const esCorteLargo = gapSeconds >= CONNECTION_GAP_ALERT_SECONDS;
+            const esSyncIncompleto = receivedPendingNotifications === false || receivedPendingNotifications === 0;
+
+            if (disconnectTimestamp > 0 && (esCorteLargo || esSyncIncompleto)) {
                 const horaCorte = new Date(disconnectTimestamp).toLocaleTimeString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
                 const horaReconexion = new Date(ahora).toLocaleTimeString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
                 
