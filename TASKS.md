@@ -22,7 +22,11 @@ Este archivo sirve como nexo de comunicación entre **Gemini (Navegador)**, **Cl
 
 ## ✅ Tareas Completadas
 
-- [x] **[2026-09-07] Solución Definitiva de Desencriptación (`Bad MAC Error`) y Recuperación de Sesión de Contactos**
+- [x] **[2026-09-07] Corrección de Filtro JID LID (`@lid`) para Mensajes Privados 1-a-1 de Usuarios**
+  - **Descubrimiento Crítico**: Gracias a los logs detallados, se detectó que los mensajes entrantes 1-a-1 de usuarios reales (incluyendo las pruebas) llegaban con identificadores WhatsApp LID (`remoteJid: ...@lid`).
+  - **Causa Raíz**: La condición `isGroup` anterior descartaba todo JID que no terminara exactamente en `@s.whatsapp.net`. Por lo tanto, descartaba en silencio todos los envíos directos de usuarios con identificadores `@lid`.
+  - **Solución Aplicada**: Se actualizó `app.js` para usar `senderPn` (número telefónico real) cuando el mensaje proviene de un JID `@lid`, y se restringió la condición `isGroup` para filtrar únicamente grupos (`@g.us`), difusiones (`@broadcast`), canales (`@newsletter`) y mensajes con participantes de grupo.
+  - **Despliegue**: `app.js` actualizado en el VPS (`prensi-bot-server`), PM2 reiniciado (`prensi-bot`), sincronizado en GitHub (`main`).
   - **Eliminación de Sesiones Corruptas**: Se eliminaron los archivos obsoletos `session-*.json` del directorio `auth_info/` en el VPS, forzando a Baileys a renegociar claves limpias de sesión por contacto sin perder la vinculación del QR (`creds.json`).
   - **Manejo de Reintentos de Protocolo Signal**: Se agregó el callback `getMessage: async () => ({ conversation: "" })` en `makeWASocket()` (`app.js`) para procesar adecuadamente reintentos de mensajes y renegociaciones de prekeys del protocolo Signal.
   - **Despliegue y Estado**: `app.js` subido al VPS (`prensi-bot-server`), PM2 reiniciado (`prensi-bot`), confirmada reconexión exitosa a WhatsApp en estado online.

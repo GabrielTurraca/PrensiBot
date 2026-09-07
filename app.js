@@ -329,6 +329,7 @@ async function iniciarBot() {
         if (type !== "notify" && type !== "append") return;
 
         for (const msg of messages) {
+            console.log(`[UPSERT EVENT] type: ${type}, fromMe: ${msg.key?.fromMe}, remoteJid: ${msg.key?.remoteJid}, hasMessage: ${!!msg.message}`);
             if (!msg.message || msg.key.fromMe) continue;
             
             const msgId = msg.key.id;
@@ -347,21 +348,28 @@ async function iniciarBot() {
                 continue;
             }
 
-            const numero = msg.key.remoteJid || "";
+            const rawJid = msg.key.remoteJid || "";
+            const senderPn = msg.key.senderPn || "";
             const participant = msg.key.participant || msg.participant || "";
 
-            // Ignorar estrictamente todo mensaje de grupo, canal o difusión
+            // Seleccionar el JID de número telefónico real si el mensaje viene identificado con @lid
+            const numero = (senderPn && senderPn.endsWith("@s.whatsapp.net")) ? senderPn : rawJid;
+
+            // Ignorar estrictamente todo mensaje de grupo, canal, difusión o estado
             const isGroup = !!participant || 
-                            numero.endsWith("@g.us") || 
-                            numero.includes("@g.us") || 
-                            numero === REPORTE_GROUP_JID || 
-                            !numero.endsWith("@s.whatsapp.net");
+                            rawJid.endsWith("@g.us") || 
+                            rawJid.includes("@g.us") || 
+                            rawJid.endsWith("@broadcast") ||
+                            rawJid.endsWith("@newsletter") ||
+                            rawJid === REPORTE_GROUP_JID;
 
             if (isGroup) {
-                if (numero.endsWith("@g.us") || numero === REPORTE_GROUP_JID) {
-                    console.log(`[GRUPO IGNORADO] ID: ${numero}`);
+                if (rawJid.endsWith("@g.us") || rawJid === REPORTE_GROUP_JID) {
+                    console.log(`[GRUPO IGNORADO] ID: ${rawJid}`);
                 } else if (participant) {
-                    console.log(`[MENSAJE DE GRUPO IGNORADO] Participante: ${participant.split('@')[0]} en ${numero}`);
+                    console.log(`[MENSAJE DE GRUPO IGNORADO] Participante: ${participant.split('@')[0]} en ${rawJid}`);
+                } else {
+                    console.log(`[DIFUSION/CANAL IGNORADO] ID: ${rawJid}`);
                 }
                 continue;
             }
