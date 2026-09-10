@@ -288,30 +288,53 @@ function obtenerDiasHastaFecha(diaEvento, mesEvento) {
     return diffDays;
 }
 
+function parseCSVRow(line) {
+    const result = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"') {
+            inQuotes = !inQuotes;
+        } else if (char === ',' && !inQuotes) {
+            result.push(current.trim());
+            current = '';
+        } else {
+            current += char;
+        }
+    }
+    result.push(current.trim());
+    return result;
+}
+
 async function cargarDatosSheets(forceRefresh = false) {
     const ahora = Date.now();
     if (!forceRefresh && cacheAgenda.lastFetch > 0 && (ahora - cacheAgenda.lastFetch < CACHE_TTL_MS)) {
         return cacheAgenda;
     }
 
-    if (!SPREADSHEET_ID || SPREADSHEET_ID === "1tu_id_de_google_sheets_aqui" || !sheets) {
-        console.warn("⚠️ [SHEETS] SPREADSHEET_ID no configurado o cliente de Sheets no disponible.");
+    if (!SPREADSHEET_ID) {
+        console.warn("⚠️ [SHEETS] SPREADSHEET_ID no configurado.");
         return cacheAgenda;
     }
 
     try {
         console.log("📊 [SHEETS] Consultando Google Sheets...");
-        const response = await sheets.spreadsheets.values.batchGet({
-            spreadsheetId: SPREADSHEET_ID,
-            ranges: ["Efemérides!A2:F", "Instituciones!A2:G"]
-        });
+        
+        const urlEf = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent("Efemérides")}`;
+        const resEf = await fetch(urlEf);
+        const textEf = await resEf.text();
 
-        const efemeridesRows = response.data.valueRanges?.[0]?.values || [];
-        const institucionesRows = response.data.valueRanges?.[1]?.values || [];
+        const urlInst = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent("Instituciones")}`;
+        const resInst = await fetch(urlInst);
+        const textInst = await resInst.text();
 
         const efemerides = [];
-        for (const row of efemeridesRows) {
-            const [fechaRaw, titulo, ambito, sugerencia, diasRaw, estado] = row;
+        const linesEf = textEf.split(/\r?\n/).slice(1);
+        for (const line of linesEf) {
+            if (!line.trim()) continue;
+            const cols = parseCSVRow(line);
+            const [fechaRaw, titulo, ambito, sugerencia, diasRaw, estado] = cols;
             if (!fechaRaw || !titulo || String(estado || "").trim().toLowerCase() !== "activo") continue;
 
             const dateParsed = parseFechaDiaMes(fechaRaw);
@@ -329,8 +352,11 @@ async function cargarDatosSheets(forceRefresh = false) {
         }
 
         const instituciones = [];
-        for (const row of institucionesRows) {
-            const [nombreInst, localidad, regional, fechaRaw, anioFundRaw, diasRaw, estado] = row;
+        const linesInst = textInst.split(/\r?\n/).slice(1);
+        for (const line of linesInst) {
+            if (!line.trim()) continue;
+            const cols = parseCSVRow(line);
+            const [nombreInst, localidad, regional, fechaRaw, anioFundRaw, diasRaw, estado] = cols;
             if (!nombreInst || !fechaRaw || String(estado || "").trim().toLowerCase() !== "activo") continue;
 
             const dateParsed = parseFechaDiaMes(fechaRaw);
@@ -362,6 +388,7 @@ async function cargarDatosSheets(forceRefresh = false) {
         return cacheAgenda;
     }
 }
+
 
 async function verificarYNotificarEventosMatutinos() {
     console.log("⏰ [CRON MATUTINO] Ejecutando verificación de efemérides e instituciones...");
