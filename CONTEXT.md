@@ -15,7 +15,7 @@ Este documento contiene todo el contexto técnico y funcional del proyecto **Pre
 ## 🛠️ 2. Stack Tecnológico
 - **Lenguaje / Entorno**: Node.js (ES Modules, `type: module`).
 - **Librería de WhatsApp**: `@whiskeysockets/baileys` (^6.7.9).
-- **Almacenamiento en la Nube**: Google Drive API v3 (`googleapis` ^144.0.0 via OAuth2 con `client_secret.json` y `token.json`).
+- **Almacenamiento en la Nube**: Google Drive API v3 y Google Sheets API v4 (`googleapis` ^144.0.0 via OAuth2 con `client_secret.json` y `token.json`).
 - **Programador de Tareas**: `node-cron` (^3.0.3) configurado en zona horaria `America/Argentina/Buenos_Aires`.
 - **Servidor HTTP Interno**: Módulo `http` nativo de Node.js escuchando en `http://127.0.0.1:3000` (escucha endpoint `/send-message` para alertas internas como notificaciones de Oracle Cloud Infrastructure).
 - **Gestión de Procesos**: PM2 corriendo en un VPS Ubuntu ARM (Oracle Cloud Infrastructure).
@@ -24,14 +24,10 @@ Este documento contiene todo el contexto técnico y funcional del proyecto **Pre
 
 ## ⚙️ 3. Estructura y Reglas Clave del Código (`app.js`)
 
-### A. Filtrado Estricto de Grupos (Regla Fundamental)
-- El bot **NUNCA debe procesar mensajes provenientes de grupos de WhatsApp** (como el grupo "PRENSA DRE XA-XB" donde está incluido para enviar los reportes).
-- **Verificación**: Un mensaje se considera de grupo y SE IGNORA INMEDIATAMENTE si:
-  - `msg.key.participant` o `msg.participant` están definidos.
-  - `msg.key.remoteJid` contiene o termina en `@g.us`.
-  - `msg.key.remoteJid === REPORTE_GROUP_JID`.
-  - `msg.key.remoteJid` no termina en `@s.whatsapp.net`.
-- **Solo se procesan** mensajes privados directos de 1 a 1 enviados al número de WhatsApp del bot.
+### A. Filtrado Estricto de Grupos (Regla Fundamental con Excepción de Comandos)
+- El bot **NUNCA procesa imágenes, videos ni mensajes generales provenientes de grupos de WhatsApp**.
+- **Excepción**: Únicamente se procesan mensajes de grupo si el texto inicia con los comandos `#agenda` o `#efemerides` enviados dentro de `REPORTE_GROUP_JID`. En tal caso, el bot responde de inmediato con la agenda de los próximos 15 días consultando la caché local.
+- **Verificación de Grupo**: Un mensaje se descarta inmediatamente si proviene de un grupo (`@g.us`), canal o difusión y no corresponde a un comando autorizado de agenda.
 
 ### B. Gestión de Sesiones y Subida a Drive
 - Cada remitente privado maneja una sesión en memoria (`sesiones.get(numero)`).
@@ -39,10 +35,10 @@ Este documento contiene todo el contexto técnico y funcional del proyecto **Pre
 - Tras finalizar las descargas activas, se programa un `setTimeout` de 3 minutos (180.000 ms). Si el usuario envía más fotos dentro de ese lapso, el timer se reinicia.
 - Cumplido el tiempo, los archivos se suben por *streaming* a Google Drive en la carpeta `YYYYMMDD_<telefono>`, se eliminan los archivos temporales de `./temp/`, se incrementa `enviosNuevos` (persistido en `counter.json`) y se le responde al usuario *"Gracias por compartirlo con el equipo de Prensa."*.
 
-### C. Reporte Horario (Cron)
-- Expresión Cron: `0 8-19 * * 1-5` en `America/Argentina/Buenos_Aires`.
-- Si `enviosNuevos > 0`, redacta el mensaje de reporte y lo envía a `REPORTE_GROUP_JID`.
-- Al finalizar, resetea `enviosNuevos = 0` y guarda el estado en `counter.json`.
+### C. Alertas Matutinas y Reporte Horario (Cron)
+- **Alertas Matutinas (07:00 AM ART - Diario)**: Consulta la planilla de Google Sheets (`SPREADSHEET_ID`), calcula los días restantes para efemérides educativas y aniversarios institucionales (incluyendo cálculo automático de años de servicio). Si hay eventos coincidentes con los días de anticipación (ej. 7, 3 o 0 días), envía una única alerta consolidada con emojis a `REPORTE_GROUP_JID`.
+- **Reporte de Envíos (08:00 - 19:00 ART - Lunes a Viernes)**: Si `enviosNuevos > 0`, redacta el reporte horario y lo envía a `REPORTE_GROUP_JID`. Al finalizar, resetea `enviosNuevos = 0` y guarda en `counter.json`.
+
 
 ---
 

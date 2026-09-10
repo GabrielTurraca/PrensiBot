@@ -26,7 +26,9 @@ if (!process.env.PARENT_FOLDER_ID) {
 const SECRET_PATH = "./client_secret.json";
 const TOKEN_PATH = "./token.json";
 const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID || "1Q9Oi0PNtdMugEfYyB7Bn3m5poD0orB9e";
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID || "1oClGXPhsNW3y2y7UxLs80V5abTd-WgaAoGEwqNT9S5k";
 const REPORTE_GROUP_JID = process.env.REPORTE_GROUP_JID || "120363250224178634@g.us"; // Grupo oficial de Prensa
+
 const ADMIN_NUMBER_JID = process.env.ADMIN_NUMBER_JID || "5493624408292@s.whatsapp.net"; // Número personal del administrador
 const PORT = process.env.PORT || 3000;
 const MAX_FILE_SIZE_MB = parseInt(process.env.MAX_FILE_SIZE_MB || "100", 10);
@@ -75,6 +77,7 @@ function esMensajeDuplicado(msgId) {
 }
 
 let drive;
+let sheets;
 let enviosNuevos = 0;
 const COUNTER_PATH = "./counter.json";
 
@@ -150,10 +153,11 @@ async function initGoogleDrive() {
         const token = JSON.parse(tokenRaw);
         oAuth2Client.setCredentials(token);
         drive = google.drive({ version: "v3", auth: oAuth2Client });
-        console.log("✅ Google Drive (OAuth2) conectado");
+        sheets = google.sheets({ version: "v4", auth: oAuth2Client });
+        console.log("✅ Google Drive y Google Sheets (OAuth2) conectados");
         return true;
     } catch (e) {
-        console.error("❌ Error conectando a Drive:", e.message);
+        console.error("❌ Error conectando a Drive/Sheets:", e.message);
         return false;
     }
 }
@@ -222,6 +226,253 @@ async function subirArchivoConReintentos(filePath, nombreArchivo, mimeType, fold
         }
     }
 }
+
+// --- MÓDULO DE GOOGLE SHEETS: EFEMÉRIDES E INSTITUCIONES ---
+
+let cacheAgenda = {
+    efemerides: [],
+    instituciones: [],
+    lastFetch: 0
+};
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // Caché local de 6 horas
+
+function parseFechaDiaMes(fechaRaw) {
+    if (!fechaRaw) return null;
+    const str = String(fechaRaw).trim();
+    const parts = str.split(/[\/\-.]/);
+    if (parts.length >= 2) {
+        const dia = parseInt(parts[0], 10);
+        const mes = parseInt(parts[1], 10);
+        if (!isNaN(dia) && !isNaN(mes) && dia >= 1 && dia <= 31 && mes >= 1 && mes <= 12) {
+            return { dia, mes };
+        }
+    }
+    return null;
+}
+
+function parseDiasAnticipacion(val) {
+    if (!val) return [7, 3, 0];
+    const str = String(val);
+    const parsed = str.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+    return parsed.length > 0 ? parsed : [7, 3, 0];
+}
+
+function getFechaArgentina() {
+    const now = new Date();
+    const formatter = new Intl.DateTimeFormat("es-AR", {
+        timeZone: "America/Argentina/Buenos_Aires",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+    });
+    const parts = formatter.formatToParts(now);
+    const day = parseInt(parts.find(p => p.type === "day").value, 10);
+    const month = parseInt(parts.find(p => p.type === "month").value, 10);
+    const year = parseInt(parts.find(p => p.type === "year").value, 10);
+    return { day, month, year, dateObj: new Date(year, month - 1, day) };
+}
+
+function obtenerDiasHastaFecha(diaEvento, mesEvento) {
+    const hoy = getFechaArgentina();
+    let targetYear = hoy.year;
+    let fechaTarget = new Date(targetYear, mesEvento - 1, diaEvento);
+    
+    let diffTime = fechaTarget.getTime() - hoy.dateObj.getTime();
+    let diffDays = Math.round(diffTime / (1000 * 3600 * 24));
+    
+    if (diffDays < 0) {
+        fechaTarget = new Date(targetYear + 1, mesEvento - 1, diaEvento);
+        diffDays = Math.round((fechaTarget.getTime() - hoy.dateObj.getTime()) / (1000 * 3600 * 24));
+    }
+    
+    return diffDays;
+}
+
+async function cargarDatosSheets(forceRefresh = false) {
+    const ahora = Date.now();
+    if (!forceRefresh && cacheAgenda.lastFetch > 0 && (ahora - cacheAgenda.lastFetch < CACHE_TTL_MS)) {
+        return cacheAgenda;
+    }
+
+    if (!SPREADSHEET_ID || SPREADSHEET_ID === "1tu_id_de_google_sheets_aqui" || !sheets) {
+        console.warn("⚠️ [SHEETS] SPREADSHEET_ID no configurado o cliente de Sheets no disponible.");
+        return cacheAgenda;
+    }
+
+    try {
+        console.log("📊 [SHEETS] Consultando Google Sheets...");
+        const response = await sheets.spreadsheets.values.batchGet({
+            spreadsheetId: SPREADSHEET_ID,
+            ranges: ["Efemérides!A2:F", "Instituciones!A2:G"]
+        });
+
+        const efemeridesRows = response.data.valueRanges?.[0]?.values || [];
+        const institucionesRows = response.data.valueRanges?.[1]?.values || [];
+
+        const efemerides = [];
+        for (const row of efemeridesRows) {
+            const [fechaRaw, titulo, ambito, sugerencia, diasRaw, estado] = row;
+            if (!fechaRaw || !titulo || String(estado || "").trim().toLowerCase() !== "activo") continue;
+
+            const dateParsed = parseFechaDiaMes(fechaRaw);
+            if (!dateParsed) continue;
+
+            efemerides.push({
+                tipo: "efemeride",
+                dia: dateParsed.dia,
+                mes: dateParsed.mes,
+                titulo: String(titulo).trim(),
+                ambito: ambito ? String(ambito).trim() : "General",
+                sugerencia: sugerencia ? String(sugerencia).trim() : "",
+                diasAnticipacion: parseDiasAnticipacion(diasRaw)
+            });
+        }
+
+        const instituciones = [];
+        for (const row of institucionesRows) {
+            const [nombreInst, localidad, regional, fechaRaw, anioFundRaw, diasRaw, estado] = row;
+            if (!nombreInst || !fechaRaw || String(estado || "").trim().toLowerCase() !== "activo") continue;
+
+            const dateParsed = parseFechaDiaMes(fechaRaw);
+            if (!dateParsed) continue;
+
+            const anioFundacion = anioFundRaw ? parseInt(String(anioFundRaw).trim(), 10) : null;
+
+            instituciones.push({
+                tipo: "institucion",
+                dia: dateParsed.dia,
+                mes: dateParsed.mes,
+                nombre: String(nombreInst).trim(),
+                localidad: localidad ? String(localidad).trim() : "",
+                regional: regional ? String(regional).trim() : "",
+                anioFundacion: !isNaN(anioFundacion) ? anioFundacion : null,
+                diasAnticipacion: parseDiasAnticipacion(diasRaw)
+            });
+        }
+
+        cacheAgenda = {
+            efemerides,
+            instituciones,
+            lastFetch: ahora
+        };
+        console.log(`✅ [SHEETS] Caché de agenda actualizada: ${efemerides.length} efemérides y ${instituciones.length} instituciones activas.`);
+        return cacheAgenda;
+    } catch (e) {
+        console.error("❌ [SHEETS] Error leyendo Google Sheets:", e.message);
+        return cacheAgenda;
+    }
+}
+
+async function verificarYNotificarEventosMatutinos() {
+    console.log("⏰ [CRON MATUTINO] Ejecutando verificación de efemérides e instituciones...");
+    const datos = await cargarDatosSheets(true);
+    const hoy = getFechaArgentina();
+    
+    const alertas = [];
+
+    for (const ef of datos.efemerides) {
+        const diasFaltantes = obtenerDiasHastaFecha(ef.dia, ef.mes);
+        if (ef.diasAnticipacion.includes(diasFaltantes)) {
+            alertas.push({ ...ef, diasFaltantes });
+        }
+    }
+
+    for (const inst of datos.instituciones) {
+        const diasFaltantes = obtenerDiasHastaFecha(inst.dia, inst.mes);
+        if (inst.diasAnticipacion.includes(diasFaltantes)) {
+            let aniosCumplidos = null;
+            if (inst.anioFundacion) {
+                aniosCumplidos = hoy.year - inst.anioFundacion;
+            }
+            alertas.push({ ...inst, diasFaltantes, aniosCumplidos });
+        }
+    }
+
+    if (alertas.length === 0) {
+        console.log("⏰ [CRON MATUTINO] No hay eventos ni aniversarios programados para alertar hoy.");
+        return;
+    }
+
+    let msg = `🤖 *ALERTAS PRENSI BOT - EFEMÉRIDES Y ANIVERSARIOS*\n\n`;
+
+    alertas.forEach((item, index) => {
+        const etiquetaDias = item.diasFaltantes === 0 
+            ? "🚨 *¡HOY!*" 
+            : `⏳ *Faltan ${item.diasFaltantes} día(s)*`;
+
+        if (item.tipo === "efemeride") {
+            msg += `📌 *${item.titulo}* (${etiquetaDias})\n`;
+            msg += `  • *Ámbito*: ${item.ambito}\n`;
+            msg += `  • *Fecha*: ${String(item.dia).padStart(2, '0')}/${String(item.mes).padStart(2, '0')}\n`;
+            if (item.sugerencia) msg += `  • *Sugerencia*: ${item.sugerencia}\n`;
+        } else {
+            msg += `🏫 *${item.nombre}* (${etiquetaDias})\n`;
+            if (item.localidad || item.regional) msg += `  • *Ubicación*: ${item.localidad} (${item.regional})\n`;
+            msg += `  • *Fecha Aniversario*: ${String(item.dia).padStart(2, '0')}/${String(item.mes).padStart(2, '0')}\n`;
+            if (item.aniosCumplidos) msg += `  • *Cumple*: ${item.aniosCumplidos}° Aniversario (Fundada en ${item.anioFundacion})\n`;
+            msg += `  • *Acción*: Preparar gráfica institucional y salutación oficial.\n`;
+        }
+        if (index < alertas.length - 1) msg += `\n───────────────────\n\n`;
+    });
+
+    if (sockGlobal) {
+        try {
+            await sockGlobal.sendMessage(REPORTE_GROUP_JID, { text: msg });
+            console.log(`✅ [CRON MATUTINO] Notificación consolidada enviada a ${REPORTE_GROUP_JID} (${alertas.length} evento(s)).`);
+        } catch (err) {
+            console.error("❌ [CRON MATUTINO] Error enviando reporte consolidado de agenda:", err);
+        }
+    }
+}
+
+async function obtenerResumenProximosDias(diasLimit = 15) {
+    const datos = await cargarDatosSheets(false);
+    const hoy = getFechaArgentina();
+    
+    const proximos = [];
+
+    for (const ef of datos.efemerides) {
+        const diasFaltantes = obtenerDiasHastaFecha(ef.dia, ef.mes);
+        if (diasFaltantes >= 0 && diasFaltantes <= diasLimit) {
+            proximos.push({ ...ef, diasFaltantes });
+        }
+    }
+
+    for (const inst of datos.instituciones) {
+        const diasFaltantes = obtenerDiasHastaFecha(inst.dia, inst.mes);
+        if (diasFaltantes >= 0 && diasFaltantes <= diasLimit) {
+            let aniosCumplidos = null;
+            if (inst.anioFundacion) {
+                aniosCumplidos = hoy.year - inst.anioFundacion;
+            }
+            proximos.push({ ...inst, diasFaltantes, aniosCumplidos });
+        }
+    }
+
+    proximos.sort((a, b) => a.diasFaltantes - b.diasFaltantes);
+
+    if (proximos.length === 0) {
+        return `📅 *Agenda Institucional (Próximos ${diasLimit} Días)*\n\nNo hay efemérides ni aniversarios registrados en la planilla para los próximos ${diasLimit} días.`;
+    }
+
+    let msg = `📅 *AGENDA INSTITUCIONAL - PRÓXIMOS ${diasLimit} DÍAS*\n\n`;
+
+    proximos.forEach((item) => {
+        const fechaStr = `${String(item.dia).padStart(2, '0')}/${String(item.mes).padStart(2, '0')}`;
+        const cuandoStr = item.diasFaltantes === 0 ? "HOY" : `en ${item.diasFaltantes} día(s)`;
+
+        if (item.tipo === "efemeride") {
+            msg += `📖 *${fechaStr}* - *${item.titulo}* (${cuandoStr})\n`;
+            msg += `   └ Ámbito: ${item.ambito}\n`;
+        } else {
+            msg += `🏫 *${fechaStr}* - *${item.nombre}* (${cuandoStr})\n`;
+            msg += `   └ ${item.localidad || 'DRE'} ${item.aniosCumplidos ? `(${item.aniosCumplidos}° Aniversario)` : ''}\n`;
+        }
+    });
+
+    return msg;
+}
+
 
 function obtenerMensajeInterno(message) {
     if (!message) return null;
@@ -354,25 +605,6 @@ async function iniciarBot() {
             // Seleccionar el JID de número telefónico real si el mensaje viene identificado con @lid
             const numero = (senderPn && senderPn.endsWith("@s.whatsapp.net")) ? senderPn : rawJid;
 
-            // Ignorar estrictamente todo mensaje de grupo, canal, difusión o estado
-            const isGroup = !!participant || 
-                            rawJid.endsWith("@g.us") || 
-                            rawJid.includes("@g.us") || 
-                            rawJid.endsWith("@broadcast") ||
-                            rawJid.endsWith("@newsletter") ||
-                            rawJid === REPORTE_GROUP_JID;
-
-            if (isGroup) {
-                if (rawJid.endsWith("@g.us") || rawJid === REPORTE_GROUP_JID) {
-                    console.log(`[GRUPO IGNORADO] ID: ${rawJid}`);
-                } else if (participant) {
-                    console.log(`[MENSAJE DE GRUPO IGNORADO] Participante: ${participant.split('@')[0]} en ${rawJid}`);
-                } else {
-                    console.log(`[DIFUSION/CANAL IGNORADO] ID: ${rawJid}`);
-                }
-                continue;
-            }
-
             const messageContent = obtenerMensajeInterno(msg.message);
             if (!messageContent) continue;
 
@@ -387,19 +619,55 @@ async function iniciarBot() {
             const hasValidKey = messageKeys.some(key => validKeys.includes(key));
             if (!hasValidKey) continue;
 
-            const isDocMedia = messageContent.documentMessage && (
-                messageContent.documentMessage.mimetype?.startsWith("image/") ||
-                messageContent.documentMessage.mimetype?.startsWith("video/")
-            );
-            const isImage = !!messageContent.imageMessage || (messageContent.documentMessage?.mimetype?.startsWith("image/"));
-            const esArchivo = isImage || !!messageContent.videoMessage || isDocMedia;
-
             const texto = messageContent.conversation || 
                           messageContent.extendedTextMessage?.text || 
                           messageContent.imageMessage?.caption || 
                           messageContent.videoMessage?.caption || 
                           messageContent.documentMessage?.caption ||
                           "";
+
+            const esComandoAgenda = texto.trim().toLowerCase().startsWith("#agenda") || texto.trim().toLowerCase().startsWith("#efemerides");
+
+            // Ignorar estrictamente todo mensaje de grupo, canal, difusión o estado (salvo comandos #agenda / #efemerides en grupo)
+            const isGroup = !!participant || 
+                            rawJid.endsWith("@g.us") || 
+                            rawJid.includes("@g.us") || 
+                            rawJid.endsWith("@broadcast") ||
+                            rawJid.endsWith("@newsletter") ||
+                            rawJid === REPORTE_GROUP_JID;
+
+            if (isGroup) {
+                if (esComandoAgenda && (rawJid === REPORTE_GROUP_JID || rawJid.endsWith("@g.us"))) {
+                    console.log(`[COMANDO AGENDA EN GRUPO] Recibido "${texto.trim()}" en ${rawJid}`);
+                    try {
+                        const respuestaAgenda = await obtenerResumenProximosDias(15);
+                        await sock.sendMessage(rawJid, { text: respuestaAgenda });
+                    } catch (errAgenda) {
+                        console.error("❌ Error al responder comando agenda en grupo:", errAgenda);
+                    }
+                } else {
+                    if (rawJid.endsWith("@g.us") || rawJid === REPORTE_GROUP_JID) {
+                        console.log(`[GRUPO IGNORADO] ID: ${rawJid}`);
+                    } else if (participant) {
+                        console.log(`[MENSAJE DE GRUPO IGNORADO] Participante: ${participant.split('@')[0]} en ${rawJid}`);
+                    } else {
+                        console.log(`[DIFUSION/CANAL IGNORADO] ID: ${rawJid}`);
+                    }
+                }
+                continue;
+            }
+
+            if (esComandoAgenda) {
+                console.log(`[COMANDO AGENDA PRIVADO] Recibido de ${numero.split('@')[0]}`);
+                try {
+                    const respuestaAgenda = await obtenerResumenProximosDias(15);
+                    await sock.sendMessage(numero, { text: respuestaAgenda });
+                } catch (errAgenda) {
+                    console.error("❌ Error respondiendo agenda en privado:", errAgenda);
+                }
+                continue;
+            }
+
             const tipoMsg = messageKeys.find(key => validKeys.includes(key)) || "desconocido";
 
             console.log(`[MENSAJE] Recibido de ${numero.split('@')[0]} - Tipo: ${tipoMsg} - Texto: "${texto}" - Es archivo: ${!!esArchivo}`);
@@ -571,7 +839,19 @@ async function iniciarBot() {
     });
 }
 
+// Cron diario matutino (07:00 AM ART): Verificación de efemérides y aniversarios institucionales
+cron.schedule('0 7 * * *', async () => {
+    try {
+        await verificarYNotificarEventosMatutinos();
+    } catch (err) {
+        console.error("[CRON MATUTINO] Error ejecutando verificación matutina:", err);
+    }
+}, {
+    timezone: "America/Argentina/Buenos_Aires"
+});
+
 cron.schedule('0 8-19 * * 1-5', async () => {
+
     if (enviosNuevos > 0 && sockGlobal) {
         const enviosAEnviar = enviosNuevos;
         try {

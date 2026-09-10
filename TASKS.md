@@ -22,7 +22,15 @@ Este archivo sirve como nexo de comunicación entre **Gemini (Navegador)**, **Cl
 
 ## ✅ Tareas Completadas
 
+- [x] **[2026-09-10] Sistema de Alertas Matutinas de Efemérides e Instituciones mediante Google Sheets**
+  - **Funcionalidad**: Integración con Google Sheets API (`v4`) para lectura automatizada de pestañas `Efemérides` e `Instituciones`.
+  - **Cron Matutino (07:00 AM ART)**: Evaluación diaria de coincidencias de fechas (con días de anticipación personalizables como 7, 3 o 0 días) y cálculo automático de aniversarios institucionales. Compila los eventos en un **único mensaje matutino consolidado** enviado al grupo de Prensa (`REPORTE_GROUP_JID`).
+  - **Comandos de Grupo e Interacción (`#agenda` / `#efemerides`)**: Excepción agregada al filtro de mensajes de grupo para responder de forma instantánea a los comandos `#agenda` o `#efemerides` utilizando una caché local con TTL de 6 horas para proteger la cuota de la API de Google Sheets.
+  - **Configuración**: Variable de entorno `SPREADSHEET_ID` agregada a `.env` y `.env.example`.
+  - **Verificación**: Verificada sintaxis en Node.js (`node --check app.js`) y test de lógica de fechas matutinas ejecutado con éxito.
+
 - [x] **[2026-09-07] Corrección de Filtro JID LID (`@lid`) para Mensajes Privados 1-a-1 de Usuarios**
+
   - **Descubrimiento Crítico**: Gracias a los logs detallados, se detectó que los mensajes entrantes 1-a-1 de usuarios reales (incluyendo las pruebas) llegaban con identificadores WhatsApp LID (`remoteJid: ...@lid`).
   - **Causa Raíz**: La condición `isGroup` anterior descartaba todo JID que no terminara exactamente en `@s.whatsapp.net`. Por lo tanto, descartaba en silencio todos los envíos directos de usuarios con identificadores `@lid`.
   - **Solución Aplicada**: Se actualizó `app.js` para usar `senderPn` (número telefónico real) cuando el mensaje proviene de un JID `@lid`, y se restringió la condición `isGroup` para filtrar únicamente grupos (`@g.us`), difusiones (`@broadcast`), canales (`@newsletter`) y mensajes con participantes de grupo.
