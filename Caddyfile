@@ -1,21 +1,25 @@
-# Caddyfile de Configuración para N8N con SSL Automático
-# Cuando implementes este archivo en producción, renómbralo a "Caddyfile"
-# y asegúrate de que DOMAIN_NAME esté definido en tu archivo .env
+# Caddyfile de Configuración para N8N y Prensi Bot con SSL Automático
+# Asegúrate de definir DOMAIN_NAME en tu archivo .env (ej: DOMAIN_NAME=prensi.macroint.net)
 
-{$DOMAIN_NAME} {
-    # Redirige todo el tráfico seguro HTTPS al contenedor n8n-main en el puerto 5678
-    reverse_proxy n8n-main:5678
+{$DOMAIN_NAME:prensi.macroint.net} {
+    # Redirección del endpoint HTTP de alertas de Prensi Bot (PM2 en Host, puerto 3000)
+    handle /send-message* {
+        reverse_proxy host.docker.internal:3000
+    }
 
-    # Opcional: Configuraciones adicionales de seguridad
+    # Redirección general para n8n
+    handle {
+        reverse_proxy n8n-main:5678
+    }
+
+    # Cabeceras de seguridad
     header {
-        # Prevenir ataques clickjacking
         X-Frame-Options "SAMEORIGIN"
-        # Protección XSS básica
         X-XSS-Protection "1; mode=block"
-        # Prevenir que el navegador trate de adivinar el MIME-type
         X-Content-Type-Options "nosniff"
     }
 
     # Habilitar compresión de respuestas gzip y zstd
     encode zstd gzip
 }
+
