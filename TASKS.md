@@ -22,6 +22,17 @@ Este archivo sirve como nexo de comunicación entre **Gemini (Navegador)**, **Cl
 
 ## ✅ Tareas Completadas
 
+- [x] **[2026-09-14] Bloque 2 — Manejo Defensivo de Reconexiones de Baileys**
+  - **Logging y Mapeo de `statusCode` en Producción (2.1)**: Auditados los registros de desconexión reales de `connection_events.log` en el VPS. Códigos observados con mayor frecuencia:
+    - **Código `408` (`Connection was lost`)**: Frecuencia alta (6 ocurrencias registradas en VPS).
+    - **Código `428` (`Connection Terminated`)**: Frecuencia media (5 ocurrencias registradas en VPS).
+    - **Código `503` (`Stream Errored`)**: 1 ocurrencia aislada.
+    - **Código `401` (`loggedOut`)**: 0 ocurrencias en producción.
+  - **Backoff Progresivo (2.2)**: Implementado retardo incremental de reconexión (`2s`, `5s`, `10s`, `20s`, máximo `30s`) ante desconexiones no fatales. Reset del contador al reconectar (`connection === "open"`).
+  - **Diferenciación de Logout Real (2.3)**: Identificado `DisconnectReason.loggedOut` / `401`. Se suspende la reconexión automática infinita y se envía una alerta crítica inmediata a `ADMIN_NUMBER_JID` solicitando re-escaneo de QR.
+  - **Alerta por Reconexiones Excesivas en 10 min (2.4)**: Implementado monitoreo de frecuencia (`MAX_RECONNECTS_PER_10MIN`, default 5 reconexiones en 10 min). Ante inestabilidad de red en el VPS/Oracle, notifica automáticamente al administrador.
+  - **Verificación**: Sintaxis validada (`node --check app.js`), desplegado en VPS y PM2 reiniciado sin errores.
+
 - [x] **[2026-09-14] Bloque 1 — Resiliencia en Descarga de Archivos Multimedia Pesados**
   - **Timeout de Descarga (1.1)**: Envuelta la llamada a `downloadMediaMessage` en un timeout explícito (`DOWNLOAD_TIMEOUT_MS`, por defecto 60000ms / 60s) con `Promise.race`, garantizando liberación de recursos en `finally` y registro de error ante cuelgues de red.
   - **Cola FIFO por Sesión (1.2)**: Implementada cola FIFO de descargas por sesión (`sesion.downloadQueue`) y procesador secuencial `procesarColaDescargas()`. Evita descargas paralelas simultáneas por usuario, reduciendo picos de RAM en el VPS de 1GB.

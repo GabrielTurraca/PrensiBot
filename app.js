@@ -34,6 +34,7 @@ const PORT = process.env.PORT || 3000;
 const MAX_FILE_SIZE_MB = parseInt(process.env.MAX_FILE_SIZE_MB || "100", 10);
 const DOWNLOAD_TIMEOUT_MS = parseInt(process.env.DOWNLOAD_TIMEOUT_MS || "60000", 10);
 const MAX_SESSION_MB = parseInt(process.env.MAX_SESSION_MB || "500", 10);
+const MAX_RECONNECTS_PER_10MIN = parseInt(process.env.MAX_RECONNECTS_PER_10MIN || "5", 10);
 const CONNECTION_GAP_ALERT_SECONDS = parseInt(process.env.CONNECTION_GAP_ALERT_SECONDS || "20", 10);
 const CONNECTION_LOG_PATH = "./connection_events.log";
 
@@ -524,6 +525,8 @@ function obtenerMensajeInterno(message) {
 }
 
 let disconnectTimestamp = 0;
+let reconnectAttempts = 0;
+let reconnectionTimestamps = [];
 
 async function iniciarBot() {
     console.log("🚀 Iniciando bot...");
@@ -561,12 +564,35 @@ async function iniciarBot() {
             const errorMsg = lastDisconnect?.error?.message || "Desconexión de socket de WhatsApp";
             await registrarEventoConexion(`🔴 Desconexión de socket (Código: ${statusCode || "N/A"} - Error: ${errorMsg})`);
 
-            const shouldReconnect = statusCode !== DisconnectReason?.loggedOut;
-            if (shouldReconnect) setTimeout(iniciarBot, 5000);
+            const isLoggedOut = statusCode === DisconnectReason?.loggedOut || statusCode === 401;
+
+            if (isLoggedOut) {
+                console.error("🚨 [CRITICO] El bot fue deslogueado de WhatsApp (DisconnectReason.loggedOut / 401). Reconexión automática detenida.");
+                await registrarEventoConexion("🚨 [LOGOUT] El bot fue deslogueado de WhatsApp. Se requiere nuevo código QR.");
+                try {
+                    if (sockGlobal) {
+                        await sockGlobal.sendMessage(ADMIN_NUMBER_JID, { text: `🚨 *ALERTA CRÍTICA: BOT DESLOGUEADO*\n\nEl bot de WhatsApp ha sido desvinculado (loggedOut / 401).\nSe requiere intervención manual para volver a escanear el código QR.` });
+                    }
+                } catch (errAlert) {
+                    console.error("Error al notificar logout al admin:", errAlert);
+                }
+            } else {
+                reconnectAttempts++;
+                const delays = [2000, 5000, 10000, 20000, 30000];
+                const delayMs = delays[Math.min(reconnectAttempts - 1, delays.length - 1)];
+                console.log(`🔄 [RECONEXION] Programando intento ${reconnectAttempts} en ${delayMs / 1000}s (Código: ${statusCode || "N/A"})...`);
+                setTimeout(iniciarBot, delayMs);
+            }
         }
 
         if (connection === "open") {
+            reconnectAttempts = 0; // Resetear backoff progresivo
             const ahora = Date.now();
+
+            // Historial de reconexiones en los últimos 10 minutos
+            reconnectionTimestamps.push(ahora);
+            reconnectionTimestamps = reconnectionTimestamps.filter(t => (ahora - t) <= 10 * 60 * 1000);
+
             let gapSeconds = 0;
             if (disconnectTimestamp > 0) {
                 gapSeconds = Math.floor((ahora - disconnectTimestamp) / 1000);
@@ -598,6 +624,20 @@ async function iniciarBot() {
                     console.error("Error al enviar alerta de reconexión al admin:", notifyErr);
                 }
             }
+
+            // Alerta por reconexiones excesivas en ventana de 10 minutos
+            if (reconnectionTimestamps.length >= MAX_RECONNECTS_PER_10MIN && disconnectTimestamp > 0) {
+                console.warn(`⚠️ [RED] Se detectaron ${reconnectionTimestamps.length} reconexiones en los últimos 10 minutos.`);
+                const alertaInestabilidad = `⚠️ *Alerta de Inestabilidad de Red VPS*\n\n` +
+                    `Se han registrado ${reconnectionTimestamps.length} reconexiones de socket en los últimos 10 minutos.\n` +
+                    `Es posible que la red del VPS u Oracle Cloud presente fluctuaciones.`;
+                try {
+                    await sock.sendMessage(ADMIN_NUMBER_JID, { text: alertaInestabilidad });
+                } catch (notifyErr) {
+                    console.error("Error enviando alerta de inestabilidad al admin:", notifyErr);
+                }
+            }
+
             disconnectTimestamp = 0;
         }
     });
