@@ -567,21 +567,43 @@ let disconnectTimestamp = 0;
 let reconnectAttempts = 0;
 let reconnectionTimestamps = [];
 
+let cachedBaileysVersion = null;
+
 async function iniciarBot() {
     console.log("🚀 Iniciando bot...");
-    await initGoogleDrive();
+    if (!drive) {
+        await initGoogleDrive();
+    }
     
     if (!existsSync(TEMP_DIR)) {
         await fsPromises.mkdir(TEMP_DIR, { recursive: true });
     }
     
-    await limpiarArchivosHuerfanos();
+    if (!drive) {
+        await limpiarArchivosHuerfanos();
+    }
     
     const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
-    const { version } = await fetchLatestBaileysVersion();
     
-    const sock = makeWASocket({ 
-        version,
+    if (!cachedBaileysVersion) {
+        try {
+            const { version } = await fetchLatestBaileysVersion();
+            cachedBaileysVersion = version;
+        } catch (vErr) {
+            console.warn("⚠️ No se pudo obtener última versión de Baileys online, usando fallback por defecto.");
+        }
+    }
+    
+    if (sockGlobal) {
+        try {
+            sockGlobal.ev.removeAllListeners();
+            sockGlobal.end(undefined);
+        } catch (e) {
+            // Ignorar errores al cerrar socket antiguo
+        }
+    }
+    
+    const sockOptions = {
         auth: state, 
         printQRInTerminal: false, 
         browser: Browsers.ubuntu("Chrome"),
@@ -589,7 +611,13 @@ async function iniciarBot() {
         syncFullHistory: false,
         shouldSyncHistoryMessage: () => true,
         getMessage: async () => ({ conversation: "" })
-    });
+    };
+
+    if (cachedBaileysVersion) {
+        sockOptions.version = cachedBaileysVersion;
+    }
+
+    const sock = makeWASocket(sockOptions);
     
     sockGlobal = sock;
 
