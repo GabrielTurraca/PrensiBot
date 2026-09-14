@@ -1048,7 +1048,21 @@ cron.schedule('0 8-19 * * 1-5', async () => {
 });
 
 function iniciarHttpServer() {
-    const server = http.createServer((req, res) => {
+    const server = http.createServer(async (req, res) => {
+        if (req.method === "GET" && (req.url === "/" || req.url === "/index.html")) {
+            try {
+                const htmlPath = "./public/index.html";
+                if (existsSync(htmlPath)) {
+                    const content = await fsPromises.readFile(htmlPath, "utf8");
+                    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+                    res.end(content);
+                    return;
+                }
+            } catch (err) {
+                console.error("Error al servir index.html:", err);
+            }
+        }
+
         if (req.method === "POST" && req.url === "/send-message") {
             let body = "";
             req.on("data", chunk => {
@@ -1079,7 +1093,6 @@ function iniciarHttpServer() {
     server.listen(PORT, "0.0.0.0", () => {
         console.log(`🚀 HTTP Server listening on http://0.0.0.0:${PORT}`);
     });
-
 }
 
 async function apagarLimpio(signal) {
