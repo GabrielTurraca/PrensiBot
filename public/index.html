@@ -9,15 +9,23 @@
 <body class="bg-[var(--background)] text-[var(--foreground)] antialiased min-h-screen font-sans">
 
   <!-- BARRA SUPERIOR DE GOBIERNO / MINISTERIAL -->
-  <div class="bg-slate-950 text-slate-300 text-[11px] py-1.5 px-4 sm:px-8 border-b border-slate-800 flex justify-between items-center">
+  <div class="bg-slate-950 text-slate-300 text-[11px] py-1.5 px-4 sm:px-8 border-b border-slate-800 flex justify-between items-center flex-wrap gap-2">
     <div class="flex items-center space-x-2 font-medium">
       <span class="inline-block w-2 h-2 rounded-full bg-blue-500"></span>
       <span>Provincia del Chaco • Ministerio de Educación, Cultura, Ciencia y Tecnología</span>
     </div>
-    <div class="hidden sm:flex items-center space-x-4 text-slate-400">
-      <span>Portal Institucional Oficial</span>
+    <div class="flex items-center space-x-3 text-slate-400">
+      <a href="https://www.facebook.com/regionaleducativarcia" target="_blank" rel="noopener" class="hover:text-blue-400 transition-colors flex items-center gap-1">
+        <span>📘 Facebook</span>
+      </a>
       <span>•</span>
-      <span class="text-emerald-400 font-semibold">prensi.macrointell.com.ar</span>
+      <a href="https://www.instagram.com/regionaleducativarcia/" target="_blank" rel="noopener" class="hover:text-pink-400 transition-colors flex items-center gap-1">
+        <span>📷 Instagram</span>
+      </a>
+      <span>•</span>
+      <a href="https://wa.me/5493624408292?text=Hola,%20quisiera%20enviar%20material%20de%20nuestra%20instituci%C3%B3n" target="_blank" rel="noopener" class="text-emerald-400 font-semibold hover:text-emerald-300 transition-colors flex items-center gap-1">
+        <span>💬 WhatsApp Prensa: +54 9 362 440-8292</span>
+      </a>
     </div>
   </div>
 
@@ -97,6 +105,39 @@
 
       </div>
       <div class="absolute -right-20 -top-20 w-80 h-80 bg-blue-500/10 rounded-full blur-3xl"></div>
+    </div>
+
+    <!-- SECCIÓN DESTACADA: CANALES OFICIALES & ENVÍO DE MATERIAL POR WHATSAPP -->
+    <div class="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 shadow-xs flex flex-col lg:flex-row items-center justify-between gap-6">
+      <div class="space-y-2 text-center lg:text-left max-w-2xl">
+        <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
+          <span>📲 Bot de Prensa & Redes Sociales</span>
+        </div>
+        <h3 class="text-xl font-black text-[var(--foreground)] tracking-tight">
+          ¿Querés enviar material de tu institución o seguir nuestras novedades?
+        </h3>
+        <p class="text-xs text-[var(--muted-foreground)] leading-relaxed">
+          Envianos fotos, videos y resúmenes de los actos, efemérides o proyectos de tu escuela al <strong>WhatsApp oficial del Bot de Prensa</strong> para su archivo automático en Drive y difusión institucional. Además, seguinos en nuestras redes oficiales.
+        </p>
+      </div>
+      
+      <div class="flex flex-wrap items-center justify-center lg:justify-end gap-3 shrink-0">
+        <!-- BOTÓN WHATSAPP -->
+        <a href="https://wa.me/5493624408292?text=Hola,%20quisiera%20enviar%20material%20de%20nuestra%20instituci%C3%B3n" target="_blank" rel="noopener" class="px-5 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black shadow-md hover:shadow-lg transition-all flex items-center gap-2">
+          <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448l-6.305 1.654zm6.597-3.807c1.676.995 3.276 1.591 5.392 1.592 5.448 0 9.886-4.434 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 3.891 1.746 5.634l-1.099 4.018 4.142-1.086z"/></svg>
+          <span>Enviar Material (+54 9 362 440-8292)</span>
+        </a>
+
+        <!-- BOTÓN FACEBOOK -->
+        <a href="https://www.facebook.com/regionaleducativarcia" target="_blank" rel="noopener" class="px-4 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold shadow-xs hover:shadow-md transition-all flex items-center gap-1.5">
+          <span>📘 Facebook</span>
+        </a>
+
+        <!-- BOTÓN INSTAGRAM -->
+        <a href="https://www.instagram.com/regionaleducativarcia/" target="_blank" rel="noopener" class="px-4 py-3 bg-gradient-to-tr from-amber-500 via-pink-600 to-purple-700 hover:opacity-95 text-white rounded-xl text-xs font-bold shadow-xs hover:shadow-md transition-all flex items-center gap-1.5">
+          <span>📷 Instagram</span>
+        </a>
+      </div>
     </div>
 
     <!-- PESTAÑAS DE NAVEGACIÓN -->
