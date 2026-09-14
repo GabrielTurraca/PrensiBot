@@ -22,6 +22,12 @@ Este archivo sirve como nexo de comunicación entre **Gemini (Navegador)**, **Cl
 
 ## ✅ Tareas Completadas
 
+- [x] **[2026-09-14] Bloque 1 — Resiliencia en Descarga de Archivos Multimedia Pesados**
+  - **Timeout de Descarga (1.1)**: Envuelta la llamada a `downloadMediaMessage` en un timeout explícito (`DOWNLOAD_TIMEOUT_MS`, por defecto 60000ms / 60s) con `Promise.race`, garantizando liberación de recursos en `finally` y registro de error ante cuelgues de red.
+  - **Cola FIFO por Sesión (1.2)**: Implementada cola FIFO de descargas por sesión (`sesion.downloadQueue`) y procesador secuencial `procesarColaDescargas()`. Evita descargas paralelas simultáneas por usuario, reduciendo picos de RAM en el VPS de 1GB.
+  - **Límite Acumulado por Sesión (1.3)**: Incorporado control de bytes acumulados por sesión (`MAX_SESSION_MB`, por defecto 500MB). Rechaza descargas que superen el límite acumulado, notificando al usuario por WhatsApp.
+  - **Verificación**: Sintaxis validada (`node --check app.js`), desplegado en VPS y PM2 reiniciado sin errores.
+
 - [x] **[2026-09-10] Sistema de Alertas Matutinas de Efemérides e Instituciones mediante Google Sheets**
   - **Funcionalidad**: Integración con Google Sheets API (`v4`) para lectura automatizada de pestañas `Efemérides` e `Instituciones`.
   - **Cron Matutino (07:00 AM ART)**: Evaluación diaria de coincidencias de fechas (con días de anticipación personalizables como 7, 3 o 0 días) y cálculo automático de aniversarios institucionales. Compila los eventos en un **único mensaje matutino consolidado** enviado al grupo de Prensa (`REPORTE_GROUP_JID`).
