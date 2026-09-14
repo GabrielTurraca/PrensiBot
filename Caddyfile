@@ -1,7 +1,8 @@
 # Caddyfile de Configuración para N8N y Prensi Bot con SSL Automático
-# Asegúrate de definir DOMAIN_NAME en tu archivo .env (ej: DOMAIN_NAME=prensi.macroint.net)
+# Asegúrate de definir DOMAIN_NAME en tu archivo .env (ej: DOMAIN_NAME=prensi.macrointell.com.ar)
 
-{$DOMAIN_NAME:prensi.macroint.net} {
+{$DOMAIN_NAME:prensi.macrointell.com.ar} {
+
     # Redirección del endpoint HTTP de alertas de Prensi Bot (PM2 en Host, puerto 3000)
     handle /send-message* {
         reverse_proxy host.docker.internal:3000
