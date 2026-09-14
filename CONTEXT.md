@@ -17,8 +17,10 @@ Este documento contiene todo el contexto técnico y funcional del proyecto **Pre
 - **Librería de WhatsApp**: `@whiskeysockets/baileys` (^6.7.9).
 - **Almacenamiento en la Nube**: Google Drive API v3 y Google Sheets API v4 (`googleapis` ^144.0.0 via OAuth2 con `client_secret.json` y `token.json`).
 - **Programador de Tareas**: `node-cron` (^3.0.3) configurado en zona horaria `America/Argentina/Buenos_Aires`.
-- **Servidor HTTP Interno**: Módulo `http` nativo de Node.js escuchando en `http://127.0.0.1:3000` (escucha endpoint `/send-message` para alertas internas como notificaciones de Oracle Cloud Infrastructure).
+- **Proxy Inverso & SSL**: **Caddy Proxy** (`caddy:2-alpine` en Docker Compose) con emisión automática de certificados **Let's Encrypt / HTTPS** para `https://prensi.macrointell.com.ar`.
+- **Servidor HTTP Interno**: Módulo `http` nativo de Node.js escuchando en `http://0.0.0.0:3000` (proxyfied vía Caddy bajo `https://prensi.macrointell.com.ar/send-message` para alertas del sistema u OCI).
 - **Gestión de Procesos**: PM2 corriendo en un VPS Ubuntu ARM (Oracle Cloud Infrastructure).
+
 
 ---
 
