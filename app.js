@@ -37,6 +37,45 @@ const MAX_SESSION_MB = parseInt(process.env.MAX_SESSION_MB || "500", 10);
 const MAX_RECONNECTS_PER_10MIN = parseInt(process.env.MAX_RECONNECTS_PER_10MIN || "5", 10);
 const CONNECTION_GAP_ALERT_SECONDS = parseInt(process.env.CONNECTION_GAP_ALERT_SECONDS || "20", 10);
 const CONNECTION_LOG_PATH = "./connection_events.log";
+const STRUCTURED_LOG_PATH = "./structured.log";
+
+const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
+const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
+const CURRENT_LOG_LEVEL_NUM = LOG_LEVELS[LOG_LEVEL] !== undefined ? LOG_LEVELS[LOG_LEVEL] : LOG_LEVELS.info;
+
+async function registrarLogEstructurado(level, evento, numero = null, sessionId = null, detalle = "") {
+    const timestamp = new Date().toISOString();
+    const entry = {
+        timestamp,
+        level,
+        evento,
+        numero: numero ? numero.split('@')[0] : null,
+        sessionId: sessionId || null,
+        detalle: typeof detalle === "object" ? JSON.stringify(detalle) : String(detalle)
+    };
+    try {
+        await fsPromises.appendFile(STRUCTURED_LOG_PATH, JSON.stringify(entry) + "\n", "utf8");
+    } catch (e) {
+        // Silencioso para no interferir con la ejecución
+    }
+}
+
+function logMessage(level, msg, metadata = {}) {
+    const levelNum = LOG_LEVELS[level] !== undefined ? LOG_LEVELS[level] : LOG_LEVELS.info;
+    if (levelNum <= CURRENT_LOG_LEVEL_NUM) {
+        if (level === "error") console.error(msg);
+        else if (level === "warn") console.warn(msg);
+        else console.log(msg);
+    }
+    registrarLogEstructurado(level, metadata.evento || "general", metadata.numero, metadata.sessionId, msg);
+}
+
+function generarSessionId(numero) {
+    const numClean = numero ? numero.split('@')[0] : "user";
+    const prefix = numClean.slice(0, 6);
+    const suffix = Math.random().toString(36).substring(2, 6);
+    return `${prefix}_${suffix}`;
+}
 
 async function registrarEventoConexion(texto) {
     const timestamp = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
@@ -773,7 +812,7 @@ async function procesarColaDescargas(sesion, sock, numero) {
     while (sesion.downloadQueue.length > 0) {
         const item = sesion.downloadQueue.shift();
         sesion.activeDownloads++;
-        console.log(`[DESCARGA] Procesando descarga FIFO para ${numero.split('@')[0]} (Pendientes en cola: ${sesion.downloadQueue.length})`);
+        logMessage("info", `[DESCARGA SESION ${sesion.sessionId}] Procesando descarga FIFO para ${numero.split('@')[0]} (Pendientes en cola: ${sesion.downloadQueue.length})`, { evento: "descarga_inicio", numero, sessionId: sesion.sessionId });
         
         try {
             const buffer = await descargarMediaConTimeout(item.msg, DOWNLOAD_TIMEOUT_MS);
@@ -796,12 +835,12 @@ async function procesarColaDescargas(sesion, sock, numero) {
                 name: fileName,
                 mimeType: mime
             });
-            console.log(`[DESCARGA] Guardado archivo local: ${fileName} (${(buffer.length / (1024 * 1024)).toFixed(2)} MB). Total acumulado sesión: ${(sesion.bytesDescargados / (1024 * 1024)).toFixed(1)} MB`);
+            logMessage("info", `[DESCARGA SESION ${sesion.sessionId}] Guardado archivo local: ${fileName} (${(buffer.length / (1024 * 1024)).toFixed(2)} MB). Total acumulado: ${(sesion.bytesDescargados / (1024 * 1024)).toFixed(1)} MB`, { evento: "descarga_exito", numero, sessionId: sesion.sessionId });
         } catch (downloadErr) {
-            console.error(`❌ [DESCARGA ERROR] Falló la descarga para ${numero.split('@')[0]}: ${downloadErr.message}`);
+            logMessage("error", `❌ [DESCARGA ERROR SESION ${sesion.sessionId}] Falló la descarga para ${numero.split('@')[0]}: ${downloadErr.message}`, { evento: "descarga_error", numero, sessionId: sesion.sessionId });
         } finally {
             sesion.activeDownloads--;
-            console.log(`[DESCARGA] Descarga finalizada para ${numero.split('@')[0]} (Activas: ${sesion.activeDownloads})`);
+            logMessage("info", `[DESCARGA SESION ${sesion.sessionId}] Descarga finalizada para ${numero.split('@')[0]} (Activas: ${sesion.activeDownloads})`, { evento: "descarga_fin", numero, sessionId: sesion.sessionId });
         }
     }
 
@@ -818,10 +857,10 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
             clearTimeout(sesion.timeoutId);
             sesion.timeoutId = null;
         }
-        console.log(`[SESION] Programando subida a Drive en 3 minutos para ${numero.split('@')[0]} (${sesion.archivosLocales.length} archivos en espera)`);
+        logMessage("info", `[SESION ${sesion.sessionId}] Programando subida a Drive en 3 minutos para ${numero.split('@')[0]} (${sesion.archivosLocales.length} archivos en espera)`, { evento: "sesion_timer", numero, sessionId: sesion.sessionId });
         sesion.timeoutId = setTimeout(async () => {
             try {
-                console.log(`[DRIVE] Iniciando proceso de subida para ${numero.split('@')[0]}`);
+                logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Iniciando proceso de subida para ${numero.split('@')[0]}`, { evento: "drive_inicio", numero, sessionId: sesion.sessionId });
                 sesiones.delete(numero);
 
                 const now = new Date();
@@ -837,21 +876,21 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
                 
                 let carpeta = await buscarCarpeta(carpetaName);
                 if (!carpeta) {
-                    console.log(`[DRIVE] Creando carpeta: ${carpetaName}`);
+                    logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Creando carpeta: ${carpetaName}`, { evento: "drive_crear_carpeta", numero, sessionId: sesion.sessionId });
                     carpeta = await crearCarpeta(carpetaName);
                 }
                 
                 let subidosConExito = 0;
                 for (const archivo of sesion.archivosLocales) {
                     if (existsSync(archivo.path)) {
-                        console.log(`[DRIVE] Subiendo archivo a Drive (Streaming con reintentos): ${archivo.name}`);
+                        logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Subiendo archivo a Drive (Streaming con reintentos): ${archivo.name}`, { evento: "drive_subida_archivo", numero, sessionId: sesion.sessionId });
                         try {
                             await subirArchivoConReintentos(archivo.path, archivo.name, archivo.mimeType, carpeta.id);
                             await fsPromises.unlink(archivo.path);
-                            console.log(`[DRIVE] Archivo subido y eliminado localmente: ${archivo.name}`);
+                            logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Archivo subido y eliminado localmente: ${archivo.name}`, { evento: "drive_archivo_ok", numero, sessionId: sesion.sessionId });
                             subidosConExito++;
                         } catch (uploadErr) {
-                            console.error(`❌ [DRIVE] Falló definitivamente la subida de ${archivo.name}. Se conserva en ./temp/ para revisión manual: ${uploadErr.message}`);
+                            logMessage("error", `❌ [DRIVE SESION ${sesion.sessionId}] Falló definitivamente la subida de ${archivo.name}. Se conserva en ./temp/: ${uploadErr.message}`, { evento: "drive_archivo_error", numero, sessionId: sesion.sessionId });
                         }
                     }
                 }
@@ -859,10 +898,10 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
                 if (subidosConExito > 0) {
                     enviosNuevos++;
                     await guardarContador();
-                    console.log(`[DRIVE] Subida completada con éxito para ${numero.split('@')[0]}. Enviando mensaje de agradecimiento.`);
+                    logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Subida completada con éxito para ${numero.split('@')[0]}. Enviando mensaje de agradecimiento.`, { evento: "drive_exito", numero, sessionId: sesion.sessionId });
                     await sock.sendMessage(numero, { text: "Gracias por compartirlo con el equipo de Prensa." });
                 } else {
-                    console.error(`❌ [DRIVE] No se pudo subir ningún archivo enviado por wa.me/${numero.split('@')[0]}. Los archivos se conservan en ./temp/.`);
+                    logMessage("error", `❌ [DRIVE SESION ${sesion.sessionId}] No se pudo subir ningún archivo enviado por wa.me/${numero.split('@')[0]}. Los archivos se conservan en ./temp/.`, { evento: "drive_fallo_total", numero, sessionId: sesion.sessionId });
                     try {
                         await sock.sendMessage(ADMIN_NUMBER_JID, { text: `⚠️ *Error de Subida a Drive*\nFalló la subida de todos los archivos enviados por: wa.me/${numero.split('@')[0]}\nLos archivos se conservan en ./temp/ del servidor para revisión manual.` });
                     } catch (notifyErr) {
@@ -870,7 +909,7 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
                     }
                 }
             } catch (err) {
-                console.error("[DRIVE] Error inesperado durante el ciclo de subida a drive:", err);
+                logMessage("error", `[DRIVE SESION ${sesion.sessionId}] Error inesperado durante el ciclo de subida a drive: ${err.message}`, { evento: "drive_error_inesperado", numero, sessionId: sesion.sessionId });
                 try {
                     await sock.sendMessage(ADMIN_NUMBER_JID, { text: `⚠️ *Error Inesperado en Subida a Drive*\nOcurrió un fallo en el ciclo de subida para: wa.me/${numero.split('@')[0]}` });
                 } catch (notifyErr) {
@@ -886,14 +925,14 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
             const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
             if (ahora - ultimaBienvenida > COOLDOWN_MS) {
-                console.log(`[BIENVENIDA] Enviando mensaje de bienvenida a ${numero.split('@')[0]}`);
+                logMessage("info", `[BIENVENIDA SESION ${sesion.sessionId}] Enviando mensaje de bienvenida a ${numero.split('@')[0]}`, { evento: "bienvenida_enviada", numero, sessionId: sesion.sessionId });
                 bienvenidaEnviada.set(numero, ahora);
                 sock.sendMessage(numero, { text: WELCOME_MESSAGE }).catch(e => console.error("Error enviando bienvenida:", e));
             } else {
-                console.log(`[BIENVENIDA] Omitiendo bienvenida para ${numero.split('@')[0]} por cooldown`);
+                logMessage("info", `[BIENVENIDA SESION ${sesion.sessionId}] Omitiendo bienvenida para ${numero.split('@')[0]} por cooldown`, { evento: "bienvenida_cooldown", numero, sessionId: sesion.sessionId });
             }
         } else {
-            console.log(`[COMANDO] Recibido #recap de ${numero.split('@')[0]}`);
+            logMessage("info", `[COMANDO SESION ${sesion.sessionId}] Recibido #recap de ${numero.split('@')[0]}`, { evento: "comando_recap", numero, sessionId: sesion.sessionId });
         }
         sesiones.delete(numero);
     }
@@ -901,8 +940,10 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
 
             try {
                 if (!sesiones.has(numero)) {
-                    console.log(`[SESION] Creando nueva sesión para ${numero.split('@')[0]}`);
+                    const sessionId = generarSessionId(numero);
+                    logMessage("info", `[SESION ${sessionId}] Creando nueva sesión para ${numero.split('@')[0]}`, { evento: "sesion_crear", numero, sessionId });
                     sesiones.set(numero, { 
+                        sessionId,
                         archivosLocales: [],
                         timeoutId: null,
                         esRecap: false,
@@ -916,12 +957,12 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
                 const sesion = sesiones.get(numero);
 
                 if (texto.toLowerCase().includes("#recap")) {
-                    console.log(`[SESION] Activado modo recap para ${numero.split('@')[0]}`);
+                    logMessage("info", `[SESION ${sesion.sessionId}] Activado modo recap para ${numero.split('@')[0]}`, { evento: "recap_modo", numero, sessionId: sesion.sessionId });
                     sesion.esRecap = true;
                 }
 
                 if (sesion.timeoutId) {
-                    console.log(`[SESION] Cancelando timeout anterior para ${numero.split('@')[0]}`);
+                    logMessage("info", `[SESION ${sesion.sessionId}] Cancelando timeout anterior para ${numero.split('@')[0]}`, { evento: "timeout_cancelar", numero, sessionId: sesion.sessionId });
                     clearTimeout(sesion.timeoutId);
                     sesion.timeoutId = null;
                 }
@@ -937,12 +978,12 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
 
                     if (sizeInBytes > maxSizeBytes) {
                         const sizeMB = (sizeInBytes / (1024 * 1024)).toFixed(1);
-                        console.warn(`[DESCARGA OMITIDA] Archivo de ${numero.split('@')[0]} supera el límite individual (${sizeMB} MB > ${MAX_FILE_SIZE_MB} MB)`);
+                        logMessage("warn", `[DESCARGA OMITIDA SESION ${sesion.sessionId}] Archivo de ${numero.split('@')[0]} supera límite individual (${sizeMB} MB > ${MAX_FILE_SIZE_MB} MB)`, { evento: "limite_archivo_individual", numero, sessionId: sesion.sessionId });
                         await sock.sendMessage(numero, { text: `⚠️ El archivo enviado es demasiado pesado (${sizeMB} MB). El tamaño máximo permitido por archivo es de ${MAX_FILE_SIZE_MB} MB.` });
                         esArchivo = false;
                     } else if ((sesion.bytesDescargados || 0) + sizeInBytes > maxSessionBytes) {
                         const acumuladoMB = ((sesion.bytesDescargados || 0) / (1024 * 1024)).toFixed(1);
-                        console.warn(`[DESCARGA OMITIDA] Archivo de ${numero.split('@')[0]} supera el límite acumulado de sesión (${acumuladoMB} MB cargados, máximo ${MAX_SESSION_MB} MB)`);
+                        logMessage("warn", `[DESCARGA OMITIDA SESION ${sesion.sessionId}] Archivo de ${numero.split('@')[0]} supera límite acumulado (${acumuladoMB} MB cargados, máx ${MAX_SESSION_MB} MB)`, { evento: "limite_sesion_acumulado", numero, sessionId: sesion.sessionId });
                         await sock.sendMessage(numero, { text: `⚠️ Se ha alcanzado el límite máximo acumulado de archivos por envío (${MAX_SESSION_MB} MB). Los archivos recibidos hasta ahora serán procesados.` });
                         esArchivo = false;
                     }

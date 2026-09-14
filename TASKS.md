@@ -22,6 +22,12 @@ Este archivo sirve como nexo de comunicación entre **Gemini (Navegador)**, **Cl
 
 ## ✅ Tareas Completadas
 
+- [x] **[2026-09-14] Bloque 3 — Logging en Producción**
+  - **Nivel de Log Configurable (3.1)**: Agregada variable de entorno `LOG_LEVEL` (`error`, `warn`, `info`, `debug`, por defecto `info`). Implementada función helper `logMessage()` que evalúa el nivel activo antes de imprimir a consola.
+  - **Trazabilidad por SessionId (3.2)**: Asignado un ID corto de sesión (`sessionId`, ej. `549362_a1b2`) al inicializar cada remitente (`sesiones.set`). Incorporado la etiqueta `[SESION ${sessionId}]` en todos los logs de sesión para rastrear flujos de usuarios vía `grep`.
+  - **Logging Estructurado JSON por Línea (3.3)**: Implementada la función `registrarLogEstructurado()` que registra eventos en `./structured.log` en formato JSON por línea (campos: `timestamp`, `level`, `evento`, `numero`, `sessionId`, `detalle`), preparado para consumo por Grafana/Loki/n8n.
+  - **Verificación**: Sintaxis validada (`node --check app.js`), desplegado en VPS y PM2 reiniciado sin errores.
+
 - [x] **[2026-09-14] Bloque 2 — Manejo Defensivo de Reconexiones de Baileys**
   - **Logging y Mapeo de `statusCode` en Producción (2.1)**: Auditados los registros de desconexión reales de `connection_events.log` en el VPS. Códigos observados con mayor frecuencia:
     - **Código `408` (`Connection was lost`)**: Frecuencia alta (6 ocurrencias registradas en VPS).
