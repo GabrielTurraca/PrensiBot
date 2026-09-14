@@ -5,14 +5,14 @@
 
     # Redirección del endpoint HTTP de alertas de Prensi Bot (PM2 en Host, puerto 3000)
     handle /send-message* {
-        reverse_proxy 172.17.0.1:3000
+        reverse_proxy 127.0.0.1:3000
     }
-
 
     # Redirección general para n8n
     handle {
-        reverse_proxy n8n-main:5678
+        reverse_proxy 127.0.0.1:5678
     }
+
 
     # Cabeceras de seguridad
     header {
