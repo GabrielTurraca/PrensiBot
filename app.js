@@ -695,9 +695,17 @@ async function iniciarBot() {
                 continue;
             }
 
+            const isDocMedia = messageContent.documentMessage && (
+                messageContent.documentMessage.mimetype?.startsWith("image/") ||
+                messageContent.documentMessage.mimetype?.startsWith("video/")
+            );
+            const isImage = !!messageContent.imageMessage || (messageContent.documentMessage?.mimetype?.startsWith("image/"));
+            let esArchivo = isImage || !!messageContent.videoMessage || isDocMedia;
+
             const tipoMsg = messageKeys.find(key => validKeys.includes(key)) || "desconocido";
 
             console.log(`[MENSAJE] Recibido de ${numero.split('@')[0]} - Tipo: ${tipoMsg} - Texto: "${texto}" - Es archivo: ${!!esArchivo}`);
+
             
             try {
                 if (!sesiones.has(numero)) {
