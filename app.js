@@ -26,6 +26,7 @@ if (!process.env.PARENT_FOLDER_ID) {
 const SECRET_PATH = "./client_secret.json";
 const TOKEN_PATH = "./token.json";
 const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID || "1Q9Oi0PNtdMugEfYyB7Bn3m5poD0orB9e";
+const CERTIFICADOS_FOLDER_ID = process.env.CERTIFICADOS_FOLDER_ID || PARENT_FOLDER_ID;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID || "1oClGXPhsNW3y2y7UxLs80V5abTd-WgaAoGEwqNT9S5k";
 const REPORTE_GROUP_JID = process.env.REPORTE_GROUP_JID || "120363250224178634@g.us"; // Grupo oficial de Prensa
 
@@ -222,6 +223,43 @@ async function crearCarpeta(nombreCarpeta) {
         fields: "id, webViewLink",
     });
     return { id: response.data.id, link: `https://drive.google.com/drive/folders/${response.data.id}` };
+}
+
+async function buscarCertificadosEnDrive(queryStr) {
+    if (!drive) {
+        await initGoogleDrive();
+    }
+    if (!drive) {
+        return [];
+    }
+
+    const dniLimpio = String(queryStr || "").replace(/\D/g, "").trim();
+    if (!dniLimpio || dniLimpio.length < 4) {
+        return [];
+    }
+
+    try {
+        const qClause = `mimeType='application/pdf' and trashed=false and name contains '${dniLimpio}'`;
+        const response = await drive.files.list({
+            q: qClause,
+            fields: "files(id, name, webViewLink, webContentLink, createdTime, size)",
+            spaces: "drive",
+            pageSize: 10
+        });
+
+        return (response.data.files || []).map(file => ({
+            id: file.id,
+            name: file.name,
+            dni: dniLimpio,
+            webViewLink: file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`,
+            webContentLink: file.webContentLink || `https://drive.google.com/uc?export=download&id=${file.id}`,
+            createdTime: file.createdTime,
+            size: file.size
+        }));
+    } catch (e) {
+        console.error("❌ Error buscando certificados en Drive:", e.message);
+        return [];
+    }
 }
 
 /**
@@ -1093,6 +1131,22 @@ function iniciarHttpServer() {
                 }
             } catch (err) {
                 console.error("Error al servir index.html:", err);
+            }
+        }
+
+        if (req.method === "GET" && req.url.startsWith("/api/certificados")) {
+            try {
+                const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+                const queryParam = urlObj.searchParams.get("dni") || urlObj.searchParams.get("q") || "";
+                const resultados = await buscarCertificadosEnDrive(queryParam);
+                res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+                res.end(JSON.stringify({ status: "success", query: queryParam, results: resultados }));
+                return;
+            } catch (errApi) {
+                console.error("Error en API de certificados:", errApi);
+                res.writeHead(500, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ status: "error", message: errApi.message }));
+                return;
             }
         }
 

@@ -292,34 +292,20 @@
         </div>
 
         <div class="flex gap-2">
-          <input type="text" id="dni-input" placeholder="Ingresá DNI o Código de Certificado..." class="w-full px-4 py-3 rounded-xl border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] text-sm focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-medium">
-          <button onclick="buscarCertificado()" class="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-md shrink-0">Validar</button>
+          <input type="text" id="dni-input" placeholder="Ingresá DNI o Código de Certificado..." class="w-full px-4 py-3 rounded-xl border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] text-sm focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-medium" onkeyup="if(event.key==='Enter') buscarCertificado()">
+          <button onclick="buscarCertificado()" class="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-md shrink-0 flex items-center gap-2">
+            <span>🔍</span> Buscar / Validar
+          </button>
         </div>
 
-        <!-- RESULTADO -->
-        <div id="cert-result" class="hidden p-5 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 space-y-4">
-          <div class="flex justify-between items-start">
-            <div>
-              <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-emerald-600 text-white shadow-2xs">✓ Auténtico & Registrado</span>
-              <h4 class="text-base font-bold text-[var(--foreground)] mt-2">Capacitación en Comunicación Institucional y Redes 2026</h4>
-              <p class="text-xs text-[var(--muted-foreground)]">Avalado por: Dirección Regional Educativa X-A y X-B</p>
-            </div>
-            <span class="text-xs font-black text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded">Reg: #2026-XAB-884</span>
-          </div>
-
-          <div class="grid grid-cols-2 gap-3 text-xs border-t border-emerald-500/20 pt-3 text-[var(--muted-foreground)] font-medium">
-            <p>👤 <strong>Titular:</strong> Gerardo Gabriel Turraca</p>
-            <p>🆔 <strong>DNI:</strong> 36.244.082</p>
-            <p>⏱️ <strong>Carga Horaria:</strong> 40 hs. Reloj</p>
-            <p>📅 <strong>Emisión:</strong> 10/08/2026</p>
-          </div>
-
-          <div class="pt-2 flex justify-end">
-            <button onclick="alert('Descargando archivo PDF oficial firmado digitalmente...')" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-md flex items-center gap-2">
-              <span>⬇️</span> Descargar PDF Oficial
-            </button>
-          </div>
+        <!-- INDICADOR DE CARGA -->
+        <div id="cert-loading" class="hidden text-center py-6 space-y-2">
+          <div class="inline-block w-7 h-7 border-3 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+          <p class="text-xs text-[var(--muted-foreground)] font-medium">Buscando certificados oficiales en la base de datos de Drive...</p>
         </div>
+
+        <!-- CONTENEDOR DE RESULTADOS DINÁMICOS -->
+        <div id="cert-result-container" class="space-y-4"></div>
 
       </div>
     </section>
@@ -397,14 +383,91 @@
       });
     }
 
-    function buscarCertificado() {
-      const input = document.getElementById('dni-input').value.trim();
-      if (!input) {
-        alert('Por favor ingresá un número de DNI válido.');
+    async function buscarCertificado(queryParam) {
+      const inputVal = queryParam || document.getElementById('dni-input').value.trim();
+      if (!inputVal) {
+        alert('Por favor ingresá un número de DNI o código válido.');
         return;
       }
-      document.getElementById('cert-result').classList.remove('hidden');
+      document.getElementById('dni-input').value = inputVal;
+
+      const container = document.getElementById('cert-result-container');
+      const loading = document.getElementById('cert-loading');
+      
+      container.classList.add('hidden');
+      loading.classList.remove('hidden');
+
+      try {
+        const res = await fetch(`/api/certificados?dni=${encodeURIComponent(inputVal)}`);
+        const data = await res.json();
+        loading.classList.add('hidden');
+        container.classList.remove('hidden');
+
+        if (data.status === 'success' && data.results && data.results.length > 0) {
+          let html = '';
+          data.results.forEach((item) => {
+            const downloadUrl = item.webContentLink || item.webViewLink;
+            const fechaStr = item.createdTime ? new Date(item.createdTime).toLocaleDateString('es-AR') : 'Oficial DRE';
+            html += `
+              <div class="p-5 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 space-y-4">
+                <div class="flex justify-between items-start flex-wrap gap-2">
+                  <div>
+                    <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-emerald-600 text-white shadow-2xs">✓ Certificado Auténtico & Registrado</span>
+                    <h4 class="text-base font-bold text-[var(--foreground)] mt-2">${item.name.replace(/\.pdf$/i, '')}</h4>
+                    <p class="text-xs text-[var(--muted-foreground)]">Emitido por: Dirección Regional Educativa Regiones X-A y X-B</p>
+                  </div>
+                  <span class="text-xs font-black text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg">Doc: PDF Oficial</span>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs border-t border-emerald-500/20 pt-3 text-[var(--muted-foreground)] font-medium">
+                  <p>🆔 <strong>DNI / Código:</strong> ${item.dni}</p>
+                  <p>📂 <strong>Archivo:</strong> ${item.name}</p>
+                  <p>📅 <strong>Registro en Drive:</strong> ${fechaStr}</p>
+                  <p>🔒 <strong>Estado:</strong> Válido y Verificado</p>
+                </div>
+
+                <div class="pt-2 flex flex-wrap justify-end gap-3">
+                  <a href="${item.webViewLink}" target="_blank" rel="noopener" class="px-4 py-2.5 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-[var(--foreground)] text-xs font-bold rounded-xl border border-[var(--border)] flex items-center gap-2">
+                    👁️ Vista Previa
+                  </a>
+                  <a href="${downloadUrl}" target="_blank" rel="noopener" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-md flex items-center gap-2">
+                    ⬇️ Descargar PDF Oficial
+                  </a>
+                </div>
+              </div>
+            `;
+          });
+          container.innerHTML = html;
+        } else {
+          container.innerHTML = `
+            <div class="p-6 text-center space-y-3 rounded-2xl border border-amber-500/30 bg-amber-500/5">
+              <div class="w-12 h-12 rounded-full bg-amber-500/10 text-amber-600 flex items-center justify-center mx-auto text-xl font-bold">⚠️</div>
+              <h4 class="text-sm font-bold text-[var(--foreground)]">No se encontró ningún certificado cargado para el DNI: "${inputVal}"</h4>
+              <p class="text-xs text-[var(--muted-foreground)] max-w-md mx-auto">
+                Si recién completaste un evento o taller, recordá que la carga de archivos puede demorar unas horas. Verificá que el número de DNI esté bien escrito.
+              </p>
+            </div>
+          `;
+        }
+      } catch (err) {
+        loading.classList.add('hidden');
+        container.classList.remove('hidden');
+        container.innerHTML = `
+          <div class="p-4 rounded-xl border border-red-500/30 bg-red-500/5 text-xs text-red-600 font-semibold text-center">
+            ❌ Ocurrió un error al consultar el servidor. Por favor reintentá en unos momentos.
+          </div>
+        `;
+      }
     }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      const params = new URLSearchParams(window.location.search);
+      const dniParam = params.get('verificar') || params.get('dni') || params.get('q');
+      if (dniParam) {
+        switchTab('certificados');
+        buscarCertificado(dniParam);
+      }
+    });
   </script>
 </body>
 </html>
