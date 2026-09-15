@@ -31,8 +31,8 @@ const REPORTE_GROUP_JID = process.env.REPORTE_GROUP_JID || "120363250224178634@g
 
 const ADMIN_NUMBER_JID = process.env.ADMIN_NUMBER_JID || "5493624408292@s.whatsapp.net"; // Número personal del administrador
 const PORT = process.env.PORT || 3000;
-const MAX_FILE_SIZE_MB = parseInt(process.env.MAX_FILE_SIZE_MB || "100", 10);
-const DOWNLOAD_TIMEOUT_MS = parseInt(process.env.DOWNLOAD_TIMEOUT_MS || "60000", 10);
+const MAX_FILE_SIZE_MB = parseInt(process.env.MAX_FILE_SIZE_MB || "300", 10);
+const DOWNLOAD_TIMEOUT_MS = parseInt(process.env.DOWNLOAD_TIMEOUT_MS || "300000", 10);
 const MAX_SESSION_MB = parseInt(process.env.MAX_SESSION_MB || "500", 10);
 const MAX_RECONNECTS_PER_10MIN = parseInt(process.env.MAX_RECONNECTS_PER_10MIN || "5", 10);
 const CONNECTION_GAP_ALERT_SECONDS = parseInt(process.env.CONNECTION_GAP_ALERT_SECONDS || "20", 10);
@@ -851,6 +851,11 @@ async function procesarColaDescargas(sesion, sock, numero) {
                 const docName = item.messageContent.documentMessage.fileName || "";
                 const matchExt = docName.match(/\.[a-zA-Z0-9]+$/);
                 if (matchExt) ext = matchExt[0];
+            } else if (item.messageContent.videoMessage) {
+                mime = item.messageContent.videoMessage.mimetype || "video/mp4";
+                if (mime.includes("quicktime")) ext = ".mov";
+                else if (mime.includes("3gpp")) ext = ".3gp";
+                else ext = ".mp4";
             }
             const fileName = `archivo_${Date.now()}_${Math.random().toString(36).substring(2, 8)}${ext}`;
             const filePath = `${TEMP_DIR}/${fileName}`;
@@ -995,8 +1000,8 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
                     sesion.timeoutId = null;
                 }
 
+                let sizeInBytes = 0;
                 if (esArchivo) {
-                    let sizeInBytes = 0;
                     if (messageContent.imageMessage) sizeInBytes = Number(messageContent.imageMessage.fileLength || 0);
                     else if (messageContent.videoMessage) sizeInBytes = Number(messageContent.videoMessage.fileLength || 0);
                     else if (messageContent.documentMessage) sizeInBytes = Number(messageContent.documentMessage.fileLength || 0);
