@@ -800,27 +800,32 @@ async function iniciarBot() {
                           messageContent.documentMessage?.caption ||
                           "";
 
-            const esComandoAgenda = texto.trim().toLowerCase().startsWith("#agenda") || texto.trim().toLowerCase().startsWith("#efemerides");
+            // Normalizar texto (remover tildes/acentos y espacios iniciales)
+            const textoLimpio = texto.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+            // Detectar #agenda, #agendas, #efemerides, #efemeride, #efemerida, #efemeridas (con o sin tildes/espacios)
+            const esComandoAgenda = /^#\s*(agenda|agendas|efemerid[as]?)/i.test(textoLimpio);
 
             // Ignorar estrictamente todo mensaje de grupo, canal, difusión o estado (salvo comandos #agenda / #efemerides en grupo)
             const isGroup = !!participant || 
-                            rawJid.endsWith("@g.us") || 
                             rawJid.includes("@g.us") || 
                             rawJid.endsWith("@broadcast") ||
                             rawJid.endsWith("@newsletter") ||
                             rawJid === REPORTE_GROUP_JID;
 
             if (isGroup) {
-                if (esComandoAgenda && (rawJid === REPORTE_GROUP_JID || rawJid.endsWith("@g.us"))) {
+                const isGroupChat = rawJid.includes("@g.us") || rawJid === REPORTE_GROUP_JID;
+                if (esComandoAgenda && isGroupChat) {
                     console.log(`[COMANDO AGENDA EN GRUPO] Recibido "${texto.trim()}" en ${rawJid}`);
                     try {
+                        const targetJid = rawJid.split(':')[0];
                         const respuestaAgenda = await obtenerResumenProximosDias(15);
-                        await sock.sendMessage(rawJid, { text: respuestaAgenda });
+                        await sock.sendMessage(targetJid, { text: respuestaAgenda });
                     } catch (errAgenda) {
                         console.error("❌ Error al responder comando agenda en grupo:", errAgenda);
                     }
                 } else {
-                    if (rawJid.endsWith("@g.us") || rawJid === REPORTE_GROUP_JID) {
+                    if (isGroupChat) {
                         console.log(`[GRUPO IGNORADO] ID: ${rawJid}`);
                     } else if (participant) {
                         console.log(`[MENSAJE DE GRUPO IGNORADO] Participante: ${participant.split('@')[0]} en ${rawJid}`);
@@ -834,8 +839,9 @@ async function iniciarBot() {
             if (esComandoAgenda) {
                 console.log(`[COMANDO AGENDA PRIVADO] Recibido de ${numero.split('@')[0]}`);
                 try {
+                    const targetJid = numero.split(':')[0];
                     const respuestaAgenda = await obtenerResumenProximosDias(15);
-                    await sock.sendMessage(numero, { text: respuestaAgenda });
+                    await sock.sendMessage(targetJid, { text: respuestaAgenda });
                 } catch (errAgenda) {
                     console.error("❌ Error respondiendo agenda en privado:", errAgenda);
                 }
