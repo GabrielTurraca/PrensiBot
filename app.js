@@ -26,7 +26,7 @@ if (!process.env.PARENT_FOLDER_ID) {
 const SECRET_PATH = "./client_secret.json";
 const TOKEN_PATH = "./token.json";
 const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID || "1Q9Oi0PNtdMugEfYyB7Bn3m5poD0orB9e";
-const CERTIFICADOS_FOLDER_ID = process.env.CERTIFICADOS_FOLDER_ID || PARENT_FOLDER_ID;
+const CERTIFICADOS_FOLDER_ID = process.env.CERTIFICADOS_FOLDER_ID || "1MGMFlTgHZS9ES3M3xS-o5G3XO_PxwyXG";
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID || "1oClGXPhsNW3y2y7UxLs80V5abTd-WgaAoGEwqNT9S5k";
 const REPORTE_GROUP_JID = process.env.REPORTE_GROUP_JID || "120363250224178634@g.us"; // Grupo oficial de Prensa
 
@@ -225,6 +225,73 @@ async function crearCarpeta(nombreCarpeta) {
     return { id: response.data.id, link: `https://drive.google.com/drive/folders/${response.data.id}` };
 }
 
+let cacheCarpetasCertificados = {
+    folderMap: new Map(),
+    folderIds: [],
+    lastFetch: 0
+};
+const CACHE_FOLDER_TTL_MS = 10 * 60 * 1000; // 10 minutos de caché para estructura de carpetas de certificados
+
+async function obtenerCarpetasCertificados() {
+    const ahora = Date.now();
+    if (cacheCarpetasCertificados.lastFetch > 0 && (ahora - cacheCarpetasCertificados.lastFetch < CACHE_FOLDER_TTL_MS)) {
+        return cacheCarpetasCertificados;
+    }
+
+    if (!drive) {
+        await initGoogleDrive();
+    }
+    if (!drive) {
+        return cacheCarpetasCertificados;
+    }
+
+    const idsRaw = String(CERTIFICADOS_FOLDER_ID || "").split(",").map(s => s.trim()).filter(Boolean);
+    const folderMap = new Map();
+    const allFolderIds = new Set();
+
+    for (const rootId of idsRaw) {
+        allFolderIds.add(rootId);
+        let rootName = "Constancia DRE";
+        try {
+            const rootInfo = await drive.files.get({
+                fileId: rootId,
+                fields: "id, name"
+            });
+            if (rootInfo.data && rootInfo.data.name) {
+                rootName = rootInfo.data.name;
+            }
+        } catch (err) {
+            console.error(`⚠️ [DRIVE] Error al obtener nombre de la carpeta ${rootId}:`, err.message);
+        }
+        folderMap.set(rootId, { id: rootId, name: rootName });
+
+        try {
+            // Buscar subcarpetas directas (si las hubiera)
+            const res = await drive.files.list({
+                q: `mimeType='application/vnd.google-apps.folder' and '${rootId}' in parents and trashed=false`,
+                fields: "files(id, name)",
+                spaces: "drive",
+                pageSize: 100
+            });
+            if (res.data.files) {
+                for (const sub of res.data.files) {
+                    allFolderIds.add(sub.id);
+                    folderMap.set(sub.id, { id: sub.id, name: sub.name });
+                }
+            }
+        } catch (err) {
+            console.error(`⚠️ [DRIVE] Error al listar subcarpetas de ${rootId}:`, err.message);
+        }
+    }
+
+    cacheCarpetasCertificados = {
+        folderMap,
+        folderIds: Array.from(allFolderIds),
+        lastFetch: ahora
+    };
+    return cacheCarpetasCertificados;
+}
+
 async function buscarCertificadosEnDrive(queryStr) {
     if (!drive) {
         await initGoogleDrive();
@@ -233,29 +300,84 @@ async function buscarCertificadosEnDrive(queryStr) {
         return [];
     }
 
-    const dniLimpio = String(queryStr || "").replace(/\D/g, "").trim();
-    if (!dniLimpio || dniLimpio.length < 4) {
+    const rawStr = String(queryStr || "").trim();
+    if (!rawStr || rawStr.length < 3) {
+        return [];
+    }
+
+    // Normalizar DNI (ej. "44.123.456" -> "44123456")
+    const dniLimpio = rawStr.replace(/\D/g, "").trim();
+    const termSanitized = rawStr.replace(/['"\\]/g, "");
+
+    const terminosABuscar = [];
+    if (dniLimpio && dniLimpio.length >= 4) {
+        terminosABuscar.push(dniLimpio);
+    }
+    if (termSanitized && termSanitized !== dniLimpio && termSanitized.length >= 3) {
+        terminosABuscar.push(termSanitized);
+    }
+
+    if (terminosABuscar.length === 0) {
         return [];
     }
 
     try {
-        const qClause = `mimeType='application/pdf' and trashed=false and name contains '${dniLimpio}'`;
-        const response = await drive.files.list({
+        const { folderIds, folderMap } = await obtenerCarpetasCertificados();
+        
+        let parentClause = "";
+        if (folderIds && folderIds.length > 0) {
+            const parentConditions = folderIds.map(id => `'${id}' in parents`).join(" or ");
+            parentClause = ` and (${parentConditions})`;
+        }
+
+        const nameConditions = terminosABuscar.map(t => `name contains '${t}'`).join(" or ");
+        const qClause = `mimeType='application/pdf' and trashed=false and (${nameConditions})${parentClause}`;
+
+        let response = await drive.files.list({
             q: qClause,
-            fields: "files(id, name, webViewLink, webContentLink, createdTime, size)",
+            fields: "files(id, name, webViewLink, webContentLink, createdTime, size, parents)",
             spaces: "drive",
-            pageSize: 10
+            pageSize: 20
         });
 
-        return (response.data.files || []).map(file => ({
-            id: file.id,
-            name: file.name,
-            dni: dniLimpio,
-            webViewLink: file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`,
-            webContentLink: file.webContentLink || `https://drive.google.com/uc?export=download&id=${file.id}`,
-            createdTime: file.createdTime,
-            size: file.size
-        }));
+        // Si no arrojó resultados restringidos por carpeta, intentar búsqueda general en Drive por DNI/nombre
+        if ((!response.data.files || response.data.files.length === 0) && parentClause) {
+            const qClauseFallback = `mimeType='application/pdf' and trashed=false and (${nameConditions})`;
+            response = await drive.files.list({
+                q: qClauseFallback,
+                fields: "files(id, name, webViewLink, webContentLink, createdTime, size, parents)",
+                spaces: "drive",
+                pageSize: 20
+            });
+        }
+
+        return (response.data.files || []).map(file => {
+            const parentId = (file.parents && file.parents.length > 0) ? file.parents[0] : null;
+            const folderInfo = parentId ? folderMap.get(parentId) : null;
+            let eventoNombre = folderInfo ? folderInfo.name : "Constancia DRE";
+
+            // Si el nombre de la carpeta es genérico, intentar extraer la etiqueta del nombre de archivo (ej. 12345678_FluidezLectora_UNNE_20260924.pdf)
+            if (eventoNombre === "Constancia DRE" || eventoNombre === "General") {
+                const parts = file.name.replace(/\.pdf$/i, "").split("_");
+                if (parts.length >= 2 && parts[1]) {
+                    const tagEtiqueta = parts[1].replace(/([a-z])([A-Z])/g, "$1 $2").trim();
+                    if (tagEtiqueta) {
+                        eventoNombre = tagEtiqueta;
+                    }
+                }
+            }
+
+            return {
+                id: file.id,
+                name: file.name,
+                dni: dniLimpio || rawStr,
+                evento: eventoNombre,
+                webViewLink: file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`,
+                webContentLink: file.webContentLink || `https://drive.google.com/uc?export=download&id=${file.id}`,
+                createdTime: file.createdTime,
+                size: file.size
+            };
+        });
     } catch (e) {
         console.error("❌ Error buscando certificados en Drive:", e.message);
         return [];

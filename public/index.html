@@ -475,16 +475,16 @@
                   <div>
                     <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-emerald-600 text-white">✓ Constancia Registrada & Auténtica</span>
                     <h4 class="text-base font-bold text-slate-900 mt-2">${item.name.replace(/\.pdf$/i, '')}</h4>
-                    <p class="text-xs text-slate-500">Emitido por: Dirección Regional Educativa Regiones X-A y X-B</p>
+                    <p class="text-xs text-slate-500">Emitido por: Dirección Regional Educativa Regiones X-A y X-B ${item.evento ? `• <strong>Evento:</strong> ${item.evento}` : ''}</p>
                   </div>
                   <span class="text-xs font-black text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-lg">Doc: PDF Oficial</span>
                 </div>
 
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs border-t border-emerald-500/20 pt-3 text-slate-600 font-medium">
                   <p>🆔 <strong>DNI / Código:</strong> ${item.dni}</p>
+                  <p>🏷️ <strong>Evento / Programa:</strong> ${item.evento || 'General'}</p>
                   <p>📂 <strong>Archivo:</strong> ${item.name}</p>
                   <p>📅 <strong>Registro en Drive:</strong> ${fechaStr}</p>
-                  <p>🔒 <strong>Estado:</strong> Válido y Verificado</p>
                 </div>
 
                 <div class="pt-2 flex flex-wrap justify-end gap-3">
