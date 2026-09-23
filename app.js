@@ -331,25 +331,43 @@ async function buscarCertificadosEnDrive(queryStr) {
         }
 
         const nameConditions = terminosABuscar.map(t => `name contains '${t}'`).join(" or ");
-        const qClause = `mimeType='application/pdf' and trashed=false and (${nameConditions})${parentClause}`;
+
+        // 1. Intento 1: Con filtro de carpeta y mimeType PDF
+        let qClause = `mimeType='application/pdf' and trashed=false and (${nameConditions})${parentClause}`;
+        console.log(`🔍 [DRIVE BUSCADOR 1] Query: "${qClause}"`);
 
         let response = await drive.files.list({
             q: qClause,
-            fields: "files(id, name, webViewLink, webContentLink, createdTime, size, parents)",
+            fields: "files(id, name, webViewLink, webContentLink, createdTime, size, parents, mimeType)",
             spaces: "drive",
             pageSize: 20
         });
 
-        // Si no arrojó resultados restringidos por carpeta, intentar búsqueda general en Drive por DNI/nombre
+        // 2. Intento 2: Con filtro de carpeta pero SIN restricción de mimeType
         if ((!response.data.files || response.data.files.length === 0) && parentClause) {
-            const qClauseFallback = `mimeType='application/pdf' and trashed=false and (${nameConditions})`;
+            qClause = `trashed=false and (${nameConditions})${parentClause}`;
+            console.log(`🔍 [DRIVE BUSCADOR 2] Query sin MimeType: "${qClause}"`);
             response = await drive.files.list({
-                q: qClauseFallback,
-                fields: "files(id, name, webViewLink, webContentLink, createdTime, size, parents)",
+                q: qClause,
+                fields: "files(id, name, webViewLink, webContentLink, createdTime, size, parents, mimeType)",
                 spaces: "drive",
                 pageSize: 20
             });
         }
+
+        // 3. Intento 3: Búsqueda amplia global por nombre/DNI (sin restricción de carpeta ni mimeType)
+        if (!response.data.files || response.data.files.length === 0) {
+            qClause = `trashed=false and (${nameConditions})`;
+            console.log(`🔍 [DRIVE BUSCADOR 3] Query Global Fallback: "${qClause}"`);
+            response = await drive.files.list({
+                q: qClause,
+                fields: "files(id, name, webViewLink, webContentLink, createdTime, size, parents, mimeType)",
+                spaces: "drive",
+                pageSize: 20
+            });
+        }
+
+        console.log(`✅ [DRIVE BUSCADOR] Archivos encontrados para "${queryStr}": ${response.data.files ? response.data.files.length : 0}`);
 
         return (response.data.files || []).map(file => {
             const parentId = (file.parents && file.parents.length > 0) ? file.parents[0] : null;
