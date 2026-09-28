@@ -12,6 +12,9 @@ import cron from "node-cron";
 import QRCode from "qrcode-terminal";
 import { Readable } from "stream";
 import http from "http";
+import { iniciarRefrescoPeriodico, buscarCertificados } from "./certificados-optimizado.js";
+import { servirArchivoEstatico } from "./static-assets.js";
+import { obtenerSupervisores, filtrarSupervisores, precalentarSupervisores, responderSupervisoresWhatsApp } from "./supervisores-optimizado.js";
 
 // Cargar variables de entorno desde .env si están presentes
 if (!process.env.PARENT_FOLDER_ID) {
@@ -198,6 +201,8 @@ async function initGoogleDrive() {
         drive = google.drive({ version: "v3", auth: oAuth2Client });
         sheets = google.sheets({ version: "v4", auth: oAuth2Client });
         console.log("✅ Google Drive y Google Sheets (OAuth2) conectados");
+        iniciarRefrescoPeriodico(drive, CERTIFICADOS_FOLDER_ID);
+        precalentarSupervisores(sheets);
         return true;
     } catch (e) {
         console.error("❌ Error conectando a Drive/Sheets:", e.message);
@@ -945,8 +950,9 @@ async function iniciarBot() {
 
             // Detectar #agenda, #agendas, #efemerides, #efemeride, #efemerida, #efemeridas (con o sin tildes/espacios)
             const esComandoAgenda = /^#\s*(agenda|agendas|efemerid[as]?)/i.test(textoLimpio);
+            const esComandoSupervisores = /^#\s*supervisor(es|a)?\b/i.test(textoLimpio);
 
-            // Ignorar estrictamente todo mensaje de grupo, canal, difusión o estado (salvo comandos #agenda / #efemerides en grupo)
+            // Ignorar estrictamente todo mensaje de grupo, canal, difusión o estado (salvo comandos #agenda / #efemerides / #supervisores en grupo)
             const isGroup = !!participant || 
                             rawJid.includes("@g.us") || 
                             rawJid.endsWith("@broadcast") ||
@@ -955,14 +961,24 @@ async function iniciarBot() {
 
             if (isGroup) {
                 const isGroupChat = rawJid.includes("@g.us") || rawJid === REPORTE_GROUP_JID;
-                if (esComandoAgenda && isGroupChat) {
-                    console.log(`[COMANDO AGENDA EN GRUPO] Recibido "${texto.trim()}" en ${rawJid}`);
-                    try {
-                        const targetJid = rawJid.split(':')[0];
-                        const respuestaAgenda = await obtenerResumenProximosDias(15);
-                        await sock.sendMessage(targetJid, { text: respuestaAgenda });
-                    } catch (errAgenda) {
-                        console.error("❌ Error al responder comando agenda en grupo:", errAgenda);
+                if (isGroupChat && (esComandoAgenda || esComandoSupervisores)) {
+                    const targetJid = rawJid.split(':')[0];
+                    if (esComandoAgenda) {
+                        console.log(`[COMANDO AGENDA EN GRUPO] Recibido "${texto.trim()}" en ${rawJid}`);
+                        try {
+                            const respuestaAgenda = await obtenerResumenProximosDias(15);
+                            await sock.sendMessage(targetJid, { text: respuestaAgenda });
+                        } catch (errAgenda) {
+                            console.error("❌ Error al responder comando agenda en grupo:", errAgenda);
+                        }
+                    } else if (esComandoSupervisores) {
+                        console.log(`[COMANDO SUPERVISORES EN GRUPO] Recibido "${texto.trim()}" en ${rawJid}`);
+                        try {
+                            const respuestaSup = await responderSupervisoresWhatsApp(texto, sheets);
+                            await sock.sendMessage(targetJid, { text: respuestaSup });
+                        } catch (errSup) {
+                            console.error("❌ Error al responder comando supervisores en grupo:", errSup);
+                        }
                     }
                 } else {
                     if (isGroupChat) {
@@ -984,6 +1000,18 @@ async function iniciarBot() {
                     await sock.sendMessage(targetJid, { text: respuestaAgenda });
                 } catch (errAgenda) {
                     console.error("❌ Error respondiendo agenda en privado:", errAgenda);
+                }
+                continue;
+            }
+
+            if (esComandoSupervisores) {
+                console.log(`[COMANDO SUPERVISORES PRIVADO] Recibido de ${numero.split('@')[0]}`);
+                try {
+                    const targetJid = numero.split(':')[0];
+                    const respuestaSup = await responderSupervisoresWhatsApp(texto, sheets);
+                    await sock.sendMessage(targetJid, { text: respuestaSup });
+                } catch (errSup) {
+                    console.error("❌ Error respondiendo supervisores en privado:", errSup);
                 }
                 continue;
             }
@@ -1284,14 +1312,36 @@ function iniciarHttpServer() {
             try {
                 const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
                 const queryParam = urlObj.searchParams.get("dni") || urlObj.searchParams.get("q") || "";
-                const resultados = await buscarCertificadosEnDrive(queryParam);
+                const dataCert = await buscarCertificados(drive, CERTIFICADOS_FOLDER_ID, queryParam);
                 res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-                res.end(JSON.stringify({ status: "success", query: queryParam, results: resultados }));
+                res.end(JSON.stringify({ status: dataCert.status, query: queryParam, results: dataCert.results }));
                 return;
             } catch (errApi) {
                 console.error("Error en API de certificados:", errApi);
                 res.writeHead(500, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: "error", message: errApi.message }));
+                return;
+            }
+        }
+
+        if (req.method === "GET" && req.url.startsWith("/api/supervisores")) {
+            try {
+                const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+                const base = await obtenerSupervisores(sheets);
+                const region = urlObj.searchParams.get("region");
+                const nivel = urlObj.searchParams.get("nivel");
+                const q = urlObj.searchParams.get("q");
+                const payload = (region || nivel || q) ? filtrarSupervisores(base, { region, nivel, q }) : base;
+                res.writeHead(200, { 
+                    "Content-Type": "application/json; charset=utf-8",
+                    "Cache-Control": "public, max-age=60"
+                });
+                res.end(JSON.stringify(payload));
+                return;
+            } catch (errSup) {
+                console.error("Error en API de supervisores:", errSup);
+                res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+                res.end(JSON.stringify({ status: "error", message: errSup.message }));
                 return;
             }
         }
@@ -1318,8 +1368,7 @@ function iniciarHttpServer() {
                 res.end(JSON.stringify({ status: "error", message: "Invalid request" }));
             });
         } else {
-            res.writeHead(404, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ status: "error", message: "Not Found" }));
+            servirArchivoEstatico(req, res);
         }
     });
 
