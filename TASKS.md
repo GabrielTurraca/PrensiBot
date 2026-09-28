@@ -22,6 +22,12 @@ Este archivo sirve como nexo de comunicación entre **Gemini (Navegador)**, **Cl
 
 ## ✅ Tareas Completadas
 
+- [x] **[2026-09-28] Módulo Directorio de Supervisores (DRE X-A / X-B) y Optimizaciones Web**
+  - **Directorio de Supervisores (`supervisores-optimizado.js`)**: Carga desde Google Sheets (`1X369rO-LEQSRZ202wrq4xOw9Z5e2xiiV-T0pBSX-pss`), normalización por Región (X-A / X-B) y Nivel/Modalidad, caché de 10 min y fallback a OAuth2 Google Sheets API v4.
+  - **Endpoint HTTP & Bot WhatsApp**: Exposición de `/api/supervisores` y comando `#supervisores` / `#supervisora` en WhatsApp con soporte para abreviaturas (`pri`, `sec`, `tec`, `esp`, `ini`, `fis`).
+  - **Portal Web (`index.html` & `styles.css`)**: Pestaña dedicada con filtros por Regional y Nivel, buscador en tiempo real y tarjetas con botones de acción directa (`tel:`, `mailto:`, `wa.me/`).
+  - **Despliegue**: Cambios integrados, verificados (`node --check`) y sincronizados en la rama `main` de GitHub (`GabrielTurraca/PrensiBot`).
+
 - [x] **[2026-09-14] Bloque 3 — Logging en Producción**
   - **Nivel de Log Configurable (3.1)**: Agregada variable de entorno `LOG_LEVEL` (`error`, `warn`, `info`, `debug`, por defecto `info`). Implementada función helper `logMessage()` que evalúa el nivel activo antes de imprimir a consola.
   - **Trazabilidad por SessionId (3.2)**: Asignado un ID corto de sesión (`sessionId`, ej. `549362_a1b2`) al inicializar cada remitente (`sesiones.set`). Incorporado la etiqueta `[SESION ${sessionId}]` en todos los logs de sesión para rastrear flujos de usuarios vía `grep`.
