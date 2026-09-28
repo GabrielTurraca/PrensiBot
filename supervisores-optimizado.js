@@ -43,21 +43,28 @@ function parseCSV(text) {
 // ---------- Mapeo flexible de columnas ----------
 const ALIASES = {
   region: ['region', 'regional', 'reg', 'region educativa', 'regional educativa'],
-  nivel: ['nivel', 'nivel educativo', 'modalidad', 'nivel/modalidad', 'nivel o modalidad'],
+  nivel: ['nivel', 'nivel educativo', 'modalidad', 'nivel/modalidad', 'nivel / modalidad', 'nivel o modalidad'],
   nombre: ['nombre', 'apellido y nombre', 'apellido y nombres', 'supervisor', 'supervisor/a', 'nombre y apellido', 'supervisores'],
   cargo: ['cargo', 'funcion', 'rol', 'cargo/funcion'],
   circuito: ['circuito', 'zona', 'supervision', 'sector', 'circuito/zona'],
   sede: ['sede', 'localidad', 'ciudad', 'domicilio', 'sede/localidad'],
-  email: ['email', 'e-mail', 'correo', 'mail', 'correo electronico', 'email institucional'],
-  telefono: ['telefono', 'tel', 'celular', 'whatsapp', 'contacto', 'nro de contacto', 'telefono de contacto'],
+  email: ['email', 'e-mail', 'correo', 'mail', 'correo electronico', 'correo electrónico', 'email institucional'],
+  telefono: ['telefono', 'tel', 'celular', 'whatsapp', 'contacto', 'nro de contacto', 'telefono de contacto', 'telefono celular', 'teléfono celular'],
 };
 
 function mapearColumnas(headerRow) {
   const idx = {};
   headerRow.forEach((h, i) => {
-    const key = norm(h);
+    const rawKey = norm(h);
+    const keyClean = rawKey.replace(/\s*\/\s*/g, '/');
     for (const [campo, lista] of Object.entries(ALIASES)) {
-      if (idx[campo] === undefined && lista.includes(key)) idx[campo] = i;
+      if (idx[campo] === undefined) {
+        const match = lista.some(alias => {
+          const aClean = norm(alias).replace(/\s*\/\s*/g, '/');
+          return keyClean === aClean || keyClean.includes(aClean) || aClean.includes(keyClean);
+        });
+        if (match) idx[campo] = i;
+      }
     }
   });
   return idx;
@@ -92,9 +99,25 @@ export function normalizarNivel(valor = '') {
 
 const limpiarTel = (t = '') => String(t).replace(/[^\d+]/g, '');
 
-// ---------- Descarga (GViz + Fallback OAuth2) ----------
+// ---------- Descarga (Google Sheets API OAuth2 con Fallback a GViz) ----------
 async function descargarCSV(tab, sheetsClient) {
-  // Intentar GViz public CSV primero
+  // Usar Google Sheets API v4 OAuth2 primero si está disponible (rápido, <300ms)
+  if (sheetsClient) {
+    try {
+      const range = tab ? `'${tab}'!A1:Z1000` : 'A1:Z1000';
+      const response = await sheetsClient.spreadsheets.values.get({
+        spreadsheetId: SUPERVISORES_SHEET_ID,
+        range,
+      });
+      if (response.data && response.data.values && response.data.values.length > 0) {
+        return response.data.values;
+      }
+    } catch (apiErr) {
+      console.warn('[supervisores] Error con Google Sheets API, intentando fallback GViz:', apiErr.message);
+    }
+  }
+
+  // Fallback con GViz public CSV export (timeout 5s)
   try {
     const url = new URL(`https://docs.google.com/spreadsheets/d/${SUPERVISORES_SHEET_ID}/gviz/tq`);
     url.searchParams.set('tqx', 'out:csv');
@@ -102,7 +125,7 @@ async function descargarCSV(tab, sheetsClient) {
     if (tab) url.searchParams.set('sheet', tab);
 
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    const timer = setTimeout(() => ctrl.abort(), 5000);
     try {
       const res = await fetch(url, { signal: ctrl.signal });
       if (res.ok) {
@@ -115,26 +138,10 @@ async function descargarCSV(tab, sheetsClient) {
       clearTimeout(timer);
     }
   } catch (e) {
-    console.warn('[supervisores] GViz public CSV export falló, reintentando con Google Sheets API OAuth2:', e.message);
+    console.warn('[supervisores] GViz public CSV export falló:', e.message);
   }
 
-  // Fallback con Google Sheets API v4 (si está inicializado en app.js)
-  if (sheetsClient) {
-    try {
-      const range = tab ? `'${tab}'!A1:Z1000` : 'A1:Z1000';
-      const response = await sheetsClient.spreadsheets.values.get({
-        spreadsheetId: SUPERVISORES_SHEET_ID,
-        range,
-      });
-      if (response.data && response.data.values) {
-        return response.data.values;
-      }
-    } catch (apiErr) {
-      console.error('[supervisores] Error en lectura con Google Sheets API:', apiErr.message);
-    }
-  }
-
-  throw new Error('No se pudo obtener la planilla de supervisores mediante GViz ni Google Sheets API.');
+  throw new Error('No se pudo obtener la planilla de supervisores mediante Google Sheets API ni GViz.');
 }
 
 function estructurar(rows, regionPorDefecto = null) {
