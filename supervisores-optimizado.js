@@ -79,15 +79,16 @@ export function normalizarRegion(valor = '') {
 }
 
 const NIVELES = [
-  [/inicial/, 'Nivel Inicial'],
-  [/primari/, 'Nivel Primario'],
-  [/secundari/, 'Nivel Secundario'],
   [/especial/, 'Educación Especial'],
+  [/bibliotec/, 'Bibliotecas'],
   [/fisica/, 'Educación Física'],
   [/tecnic|tecnolog|formacion profesional|ept/, 'Educación Técnica'],
-  [/superior/, 'Nivel Superior'],
-  [/adulto|jovenes y adultos|eja/, 'Jóvenes y Adultos'],
   [/artistic|arte/, 'Educación Artística'],
+  [/adulto|jovenes y adultos|eja/, 'Jóvenes y Adultos'],
+  [/superior/, 'Nivel Superior'],
+  [/inicial/, 'Nivel Inicial'],
+  [/secundari/, 'Nivel Secundario'],
+  [/primari/, 'Nivel Primario'],
 ];
 
 export function normalizarNivel(valor = '') {
