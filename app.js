@@ -962,12 +962,11 @@ async function iniciarBot() {
             if (isGroup) {
                 const isGroupChat = rawJid.includes("@g.us") || rawJid === REPORTE_GROUP_JID;
                 if (isGroupChat && (esComandoAgenda || esComandoSupervisores)) {
-                    const targetJid = rawJid.split(':')[0];
                     if (esComandoAgenda) {
                         console.log(`[COMANDO AGENDA EN GRUPO] Recibido "${texto.trim()}" en ${rawJid}`);
                         try {
                             const respuestaAgenda = await obtenerResumenProximosDias(15);
-                            await sock.sendMessage(targetJid, { text: respuestaAgenda });
+                            await sock.sendMessage(rawJid, { text: respuestaAgenda }, { quoted: msg });
                         } catch (errAgenda) {
                             console.error("❌ Error al responder comando agenda en grupo:", errAgenda);
                         }
@@ -975,7 +974,7 @@ async function iniciarBot() {
                         console.log(`[COMANDO SUPERVISORES EN GRUPO] Recibido "${texto.trim()}" en ${rawJid}`);
                         try {
                             const respuestaSup = await responderSupervisoresWhatsApp(texto, sheets);
-                            await sock.sendMessage(targetJid, { text: respuestaSup });
+                            await sock.sendMessage(rawJid, { text: respuestaSup }, { quoted: msg });
                         } catch (errSup) {
                             console.error("❌ Error al responder comando supervisores en grupo:", errSup);
                         }
@@ -995,9 +994,8 @@ async function iniciarBot() {
             if (esComandoAgenda) {
                 console.log(`[COMANDO AGENDA PRIVADO] Recibido de ${numero.split('@')[0]}`);
                 try {
-                    const targetJid = numero.split(':')[0];
                     const respuestaAgenda = await obtenerResumenProximosDias(15);
-                    await sock.sendMessage(targetJid, { text: respuestaAgenda });
+                    await sock.sendMessage(rawJid, { text: respuestaAgenda }, { quoted: msg });
                 } catch (errAgenda) {
                     console.error("❌ Error respondiendo agenda en privado:", errAgenda);
                 }
@@ -1007,9 +1005,8 @@ async function iniciarBot() {
             if (esComandoSupervisores) {
                 console.log(`[COMANDO SUPERVISORES PRIVADO] Recibido de ${numero.split('@')[0]}`);
                 try {
-                    const targetJid = numero.split(':')[0];
                     const respuestaSup = await responderSupervisoresWhatsApp(texto, sheets);
-                    await sock.sendMessage(targetJid, { text: respuestaSup });
+                    await sock.sendMessage(rawJid, { text: respuestaSup }, { quoted: msg });
                 } catch (errSup) {
                     console.error("❌ Error respondiendo supervisores en privado:", errSup);
                 }
