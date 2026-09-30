@@ -930,11 +930,11 @@ async function iniciarBot() {
             // Normalizar texto (remover tildes/acentos y espacios iniciales)
             const textoLimpio = texto.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
-            // Detectar #agenda, #agendas, #efemerides, #efemeride, #efemerida, #efemeridas (con o sin tildes/espacios)
-            const esComandoAgenda = /^#\s*(agenda|agendas|efemerid[as]?)/i.test(textoLimpio);
-            const esComandoSupervisores = /^#\s*supervisor(es|a)?\b/i.test(textoLimpio);
+            // Detectar #agenda, #agendas, #efemerides, #efemeride, #efemerida, #efemeridas (con o sin tildes/espacios/errores de tipeo)
+            const esComandoAgenda = /^#\s*(agenda|agendas|efemerid)/i.test(textoLimpio);
+            const esComandoSupervisores = /^#\s*superv/i.test(textoLimpio);
 
-            // Ignorar estrictamente todo mensaje de grupo, canal, difusión o estado (salvo comandos #agenda / #efemerides / #supervisores en grupo)
+            // Ignorar strictly todo mensaje de grupo, canal, difusión o estado (salvo comandos #agenda / #efemerides / #supervisores en grupo)
             const isGroup = !!participant || 
                             rawJid.includes("@g.us") || 
                             rawJid.endsWith("@broadcast") ||
@@ -948,7 +948,7 @@ async function iniciarBot() {
                         console.log(`[COMANDO AGENDA EN GRUPO] Recibido "${texto.trim()}" en ${rawJid}`);
                         try {
                             const respuestaAgenda = await obtenerResumenProximosDias(15);
-                            await sock.sendMessage(rawJid, { text: respuestaAgenda }, { quoted: msg });
+                            await sock.sendMessage(rawJid, { text: respuestaAgenda });
                         } catch (errAgenda) {
                             console.error("❌ Error al responder comando agenda en grupo:", errAgenda);
                         }
@@ -956,7 +956,7 @@ async function iniciarBot() {
                         console.log(`[COMANDO SUPERVISORES EN GRUPO] Recibido "${texto.trim()}" en ${rawJid}`);
                         try {
                             const respuestaSup = await responderSupervisoresWhatsApp(texto, sheets);
-                            await sock.sendMessage(rawJid, { text: respuestaSup }, { quoted: msg });
+                            await sock.sendMessage(rawJid, { text: respuestaSup });
                         } catch (errSup) {
                             console.error("❌ Error al responder comando supervisores en grupo:", errSup);
                         }
@@ -974,13 +974,12 @@ async function iniciarBot() {
             }
 
             const targetJid = (numero && numero.endsWith("@s.whatsapp.net")) ? numero : rawJid;
-            const cleanMsg = { ...msg, key: { ...msg.key, remoteJid: targetJid } };
 
             if (esComandoAgenda) {
                 console.log(`[COMANDO AGENDA PRIVADO] Recibido de ${numero.split('@')[0]} (Target JID: ${targetJid})`);
                 try {
                     const respuestaAgenda = await obtenerResumenProximosDias(15);
-                    await sock.sendMessage(targetJid, { text: respuestaAgenda }, { quoted: cleanMsg });
+                    await sock.sendMessage(targetJid, { text: respuestaAgenda });
                 } catch (errAgenda) {
                     console.error("❌ Error respondiendo agenda en privado:", errAgenda);
                 }
@@ -991,7 +990,7 @@ async function iniciarBot() {
                 console.log(`[COMANDO SUPERVISORES PRIVADO] Recibido de ${numero.split('@')[0]} (Target JID: ${targetJid})`);
                 try {
                     const respuestaSup = await responderSupervisoresWhatsApp(texto, sheets);
-                    await sock.sendMessage(targetJid, { text: respuestaSup }, { quoted: cleanMsg });
+                    await sock.sendMessage(targetJid, { text: respuestaSup });
                 } catch (errSup) {
                     console.error("❌ Error respondiendo supervisores en privado:", errSup);
                 }
