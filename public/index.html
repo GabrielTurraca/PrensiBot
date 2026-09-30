@@ -500,7 +500,11 @@
         let regionCount = 0;
 
         for (const [nivelName, lista] of Object.entries(nivelesMap)) {
-          if (supState.nivel !== 'TODOS' && !normText(nivelName).includes(normText(supState.nivel))) continue;
+          if (supState.nivel !== 'TODOS') {
+            const nNameNorm = normText(nivelName);
+            const sNivNorm = normText(supState.nivel);
+            if (!nNameNorm.includes(sNivNorm) && !sNivNorm.includes(nNameNorm)) continue;
+          }
 
           const supervisoresFiltrados = lista.filter(s => {
             if (!searchVal) return true;

@@ -861,31 +861,13 @@ async function iniciarBot() {
                 const horaCorte = new Date(disconnectTimestamp).toLocaleTimeString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
                 const horaReconexion = new Date(ahora).toLocaleTimeString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
                 
-                const alertaMsg = `⚠️ *Alerta de Reconexión de Socket*\n\n` +
-                    `• *Inicio del corte*: ${horaCorte}\n` +
-                    `• *Reconexión*: ${horaReconexion}\n` +
-                    `• *Duración del corte*: ${gapSeconds} segundo(s)\n` +
-                    `• *Notificaciones offline*: ${pendingInfo}\n\n` +
-                    `Revisá si algún usuario envió material durante este lapso.`;
-
-                try {
-                    await sock.sendMessage(ADMIN_NUMBER_JID, { text: alertaMsg });
-                } catch (notifyErr) {
-                    console.error("Error al enviar alerta de reconexión al admin:", notifyErr);
-                }
+                logMessage("info", `[RECONEXION] Socket reconectado. Inicio: ${horaCorte}, Fin: ${horaReconexion}, Duración: ${gapSeconds}s`);
+                // Notificación por WhatsApp deshabilitada a pedido del usuario (para no saturar mensajes por micro-cortes)
             }
 
-            // Alerta por reconexiones excesivas en ventana de 10 minutos
+            // Registro en log para reconexiones en ventana de 10 minutos (notificación por WhatsApp deshabilitada)
             if (reconnectionTimestamps.length >= MAX_RECONNECTS_PER_10MIN && disconnectTimestamp > 0) {
                 console.warn(`⚠️ [RED] Se detectaron ${reconnectionTimestamps.length} reconexiones en los últimos 10 minutos.`);
-                const alertaInestabilidad = `⚠️ *Alerta de Inestabilidad de Red VPS*\n\n` +
-                    `Se han registrado ${reconnectionTimestamps.length} reconexiones de socket en los últimos 10 minutos.\n` +
-                    `Es posible que la red del VPS u Oracle Cloud presente fluctuaciones.`;
-                try {
-                    await sock.sendMessage(ADMIN_NUMBER_JID, { text: alertaInestabilidad });
-                } catch (notifyErr) {
-                    console.error("Error enviando alerta de inestabilidad al admin:", notifyErr);
-                }
             }
 
             disconnectTimestamp = 0;
@@ -922,7 +904,7 @@ async function iniciarBot() {
             const participant = msg.key.participant || msg.participant || "";
 
             // Seleccionar el JID de número telefónico real si el mensaje viene identificado con @lid
-            const numero = (senderPn && senderPn.endsWith("@s.whatsapp.net")) ? senderPn : rawJid;
+            const numero = (senderPn && senderPn.endsWith("@s.whatsapp.net")) ? senderPn : (rawJid.endsWith("@lid") ? rawJid.replace("@lid", "@s.whatsapp.net") : rawJid);
 
             const messageContent = obtenerMensajeInterno(msg.message);
             if (!messageContent) continue;
@@ -991,11 +973,14 @@ async function iniciarBot() {
                 continue;
             }
 
+            const targetJid = (numero && numero.endsWith("@s.whatsapp.net")) ? numero : rawJid;
+            const cleanMsg = { ...msg, key: { ...msg.key, remoteJid: targetJid } };
+
             if (esComandoAgenda) {
-                console.log(`[COMANDO AGENDA PRIVADO] Recibido de ${numero.split('@')[0]}`);
+                console.log(`[COMANDO AGENDA PRIVADO] Recibido de ${numero.split('@')[0]} (Target JID: ${targetJid})`);
                 try {
                     const respuestaAgenda = await obtenerResumenProximosDias(15);
-                    await sock.sendMessage(rawJid, { text: respuestaAgenda }, { quoted: msg });
+                    await sock.sendMessage(targetJid, { text: respuestaAgenda }, { quoted: cleanMsg });
                 } catch (errAgenda) {
                     console.error("❌ Error respondiendo agenda en privado:", errAgenda);
                 }
@@ -1003,10 +988,10 @@ async function iniciarBot() {
             }
 
             if (esComandoSupervisores) {
-                console.log(`[COMANDO SUPERVISORES PRIVADO] Recibido de ${numero.split('@')[0]}`);
+                console.log(`[COMANDO SUPERVISORES PRIVADO] Recibido de ${numero.split('@')[0]} (Target JID: ${targetJid})`);
                 try {
                     const respuestaSup = await responderSupervisoresWhatsApp(texto, sheets);
-                    await sock.sendMessage(rawJid, { text: respuestaSup }, { quoted: msg });
+                    await sock.sendMessage(targetJid, { text: respuestaSup }, { quoted: cleanMsg });
                 } catch (errSup) {
                     console.error("❌ Error respondiendo supervisores en privado:", errSup);
                 }
