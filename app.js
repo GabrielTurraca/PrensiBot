@@ -949,6 +949,7 @@ async function iniciarBot() {
                         try {
                             const respuestaAgenda = await obtenerResumenProximosDias(15);
                             await sock.sendMessage(rawJid, { text: respuestaAgenda });
+                            console.log(`[SENT GROUP] ${new Date().toISOString()} -> ${rawJid}: ${respuestaAgenda.slice(0, 50).replace(/\n/g, ' ')}...`);
                         } catch (errAgenda) {
                             console.error("❌ Error al responder comando agenda en grupo:", errAgenda);
                         }
@@ -957,6 +958,7 @@ async function iniciarBot() {
                         try {
                             const respuestaSup = await responderSupervisoresWhatsApp(texto, sheets);
                             await sock.sendMessage(rawJid, { text: respuestaSup });
+                            console.log(`[SENT GROUP] ${new Date().toISOString()} -> ${rawJid}: ${respuestaSup.slice(0, 50).replace(/\n/g, ' ')}...`);
                         } catch (errSup) {
                             console.error("❌ Error al responder comando supervisores en grupo:", errSup);
                         }
@@ -980,6 +982,7 @@ async function iniciarBot() {
                 try {
                     const respuestaAgenda = await obtenerResumenProximosDias(15);
                     await sock.sendMessage(targetJid, { text: respuestaAgenda });
+                    console.log(`[SENT PRIVATE] ${new Date().toISOString()} -> ${targetJid}: ${respuestaAgenda.slice(0, 50).replace(/\n/g, ' ')}...`);
                 } catch (errAgenda) {
                     console.error("❌ Error respondiendo agenda en privado:", errAgenda);
                 }
@@ -991,6 +994,7 @@ async function iniciarBot() {
                 try {
                     const respuestaSup = await responderSupervisoresWhatsApp(texto, sheets);
                     await sock.sendMessage(targetJid, { text: respuestaSup });
+                    console.log(`[SENT PRIVATE] ${new Date().toISOString()} -> ${targetJid}: ${respuestaSup.slice(0, 50).replace(/\n/g, ' ')}...`);
                 } catch (errSup) {
                     console.error("❌ Error respondiendo supervisores en privado:", errSup);
                 }
