@@ -203,14 +203,52 @@
 
     <!-- SECCIÓN: AGENDA & EFEMÉRIDES -->
     <section id="sec-efemerides" class="hidden space-y-6">
-      <div>
-        <h3 class="text-lg font-bold text-slate-900">Agenda & Efemérides</h3>
-        <p class="text-xs text-slate-500 mt-1">Próximos aniversarios institucionales y fechas del calendario escolar, sincronizados con la planilla oficial de la regional.</p>
-      </div>
-      <div id="grid-efemerides" class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div class="p-5 rounded-2xl border border-dashed border-slate-300 bg-white text-center text-xs text-slate-400 col-span-full">
-          Conectar aquí la fuente de datos de la planilla de efemérides (mismo origen CSV que usa Prensi Bot) para listar los próximos eventos.
+      <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-6">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+          <div>
+            <h3 class="text-xl font-bold text-slate-900">Agenda & Efemérides Institucionales</h3>
+            <p class="text-xs text-slate-500">Calendario de efemérides educativas y aniversarios de escuelas de la DRE X-A y X-B.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <span id="ef-badge-total" class="text-xs font-bold bg-blue-50 text-blue-700 px-3 py-1.5 rounded-xl border border-blue-100">
+              Cargando eventos...
+            </span>
+          </div>
         </div>
+
+        <!-- FILTROS DE AGENDA -->
+        <div class="space-y-4 bg-slate-50 p-4 rounded-xl border border-slate-200/80">
+          <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+            <span class="text-xs font-bold text-slate-700 w-28 shrink-0">📌 Tipo:</span>
+            <div class="flex flex-wrap gap-2" id="ef-filter-tipo">
+              <button onclick="setEfTipo('todos')" class="ef-chip-tipo active px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 text-white shadow-sm transition-all" data-v="todos">Todos</button>
+              <button onclick="setEfTipo('efemeride')" class="ef-chip-tipo px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-slate-700 border border-slate-200 hover:bg-slate-100 transition-all" data-v="efemeride">Efemérides</button>
+              <button onclick="setEfTipo('institucion')" class="ef-chip-tipo px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-slate-700 border border-slate-200 hover:bg-slate-100 transition-all" data-v="institucion">Aniversarios Escolares</button>
+            </div>
+          </div>
+
+          <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+            <span class="text-xs font-bold text-slate-700 w-28 shrink-0">⏳ Horizonte:</span>
+            <div class="flex flex-wrap gap-2" id="ef-filter-dias">
+              <button onclick="setEfDias(30)" class="ef-chip-dias active px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 text-white shadow-sm transition-all" data-v="30">Próximos 30 días</button>
+              <button onclick="setEfDias(60)" class="ef-chip-dias px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-slate-700 border border-slate-200 hover:bg-slate-100 transition-all" data-v="60">Próximos 60 días</button>
+              <button onclick="setEfDias(365)" class="ef-chip-dias px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-slate-700 border border-slate-200 hover:bg-slate-100 transition-all" data-v="365">Todo el año</button>
+            </div>
+          </div>
+
+          <div class="pt-1">
+            <input type="text" id="ef-search-input" placeholder="🔍 Buscar por nombre, efeméride, localidad o ámbito..." class="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-medium focus:ring-2 focus:ring-blue-500 bg-white" oninput="renderEfemeridesUI()">
+          </div>
+        </div>
+
+        <!-- INDICADOR DE CARGA -->
+        <div id="ef-loading" class="text-center py-8 space-y-2">
+          <div class="inline-block w-7 h-7 border-3 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+          <p class="text-xs text-slate-500 font-medium">Cargando agenda oficial desde Google Sheets...</p>
+        </div>
+
+        <!-- CONTENEDOR DE RESULTADOS -->
+        <div id="ef-results-container" class="hidden grid grid-cols-1 md:grid-cols-2 gap-4"></div>
       </div>
     </section>
 
@@ -419,7 +457,165 @@
       if (sec) sec.classList.remove('hidden');
 
       if (tabId === 'proyectos') renderProyectos('TODOS');
+      if (tabId === 'efemerides' && !efemeridesState.loaded) fetchEfemeridesData();
       if (tabId === 'supervisores' && !supState.loaded) fetchSupervisoresData();
+    }
+
+    // STATE Y LÓGICA DE AGENDA & EFEMÉRIDES
+    const efemeridesState = {
+      data: null,
+      tipo: 'todos',
+      dias: 30,
+      loaded: false
+    };
+
+    const escHtml = (s = '') => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const normText = (s = '') => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+
+    async function fetchEfemeridesData() {
+      const loading = document.getElementById('ef-loading');
+      const container = document.getElementById('ef-results-container');
+      const badge = document.getElementById('ef-badge-total');
+      if (loading) loading.classList.remove('hidden');
+      if (container) container.classList.add('hidden');
+
+      try {
+        const res = await fetch(`/api/agenda?dias=365`);
+        const payload = await res.json();
+        if (loading) loading.classList.add('hidden');
+        if (container) container.classList.remove('hidden');
+
+        if (payload.status === 'success' && payload.results) {
+          efemeridesState.data = payload.results;
+          efemeridesState.loaded = true;
+          if (badge) badge.textContent = `📅 Total: ${payload.total || 0} eventos en agenda`;
+          renderEfemeridesUI();
+        } else {
+          if (container) {
+            container.innerHTML = `
+              <div class="p-4 rounded-xl border border-amber-500/30 bg-amber-500/5 text-xs text-amber-700 font-semibold text-center col-span-full">
+                ⚠️ No se pudo cargar la agenda institucional. Por favor reintentá en unos momentos.
+              </div>`;
+          }
+        }
+      } catch (err) {
+        if (loading) loading.classList.add('hidden');
+        if (container) {
+          container.classList.remove('hidden');
+          container.innerHTML = `
+            <div class="p-4 rounded-xl border border-red-500/30 bg-red-500/5 text-xs text-red-600 font-semibold text-center col-span-full">
+              ❌ Ocurrió un error al conectar con la agenda de la regional. Reintentá en unos minutos.
+            </div>`;
+        }
+      }
+    }
+
+    function setEfTipo(tipo) {
+      efemeridesState.tipo = tipo;
+      document.querySelectorAll('#ef-filter-tipo .ef-chip-tipo').forEach(btn => {
+        const active = btn.getAttribute('data-v') === tipo;
+        btn.className = `ef-chip-tipo px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${active ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'}`;
+      });
+      renderEfemeridesUI();
+    }
+
+    function setEfDias(dias) {
+      efemeridesState.dias = parseInt(dias, 10);
+      document.querySelectorAll('#ef-filter-dias .ef-chip-dias').forEach(btn => {
+        const active = parseInt(btn.getAttribute('data-v'), 10) === efemeridesState.dias;
+        btn.className = `ef-chip-dias px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${active ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'}`;
+      });
+      renderEfemeridesUI();
+    }
+
+    function renderEfemeridesUI() {
+      if (!efemeridesState.data) return;
+      const container = document.getElementById('ef-results-container');
+      if (!container) return;
+
+      const searchVal = normText(document.getElementById('ef-search-input')?.value || '');
+
+      let items = efemeridesState.data;
+
+      // Filtrar por tipo
+      if (efemeridesState.tipo !== 'todos') {
+        items = items.filter(item => item.tipo === efemeridesState.tipo);
+      }
+
+      // Filtrar por dias limite
+      if (efemeridesState.dias && efemeridesState.dias > 0) {
+        items = items.filter(item => item.diasFaltantes >= 0 && item.diasFaltantes <= efemeridesState.dias);
+      }
+
+      // Filtrar por búsqueda
+      if (searchVal) {
+        items = items.filter(item => {
+          const strSearch = normText(`${item.titulo || item.nombre || ''} ${item.ambito || item.localidad || ''} ${item.regional || ''} ${item.sugerencia || ''}`);
+          return strSearch.includes(searchVal);
+        });
+      }
+
+      if (items.length === 0) {
+        container.innerHTML = `
+          <div class="p-8 text-center space-y-3 rounded-2xl border border-amber-500/30 bg-amber-500/5 col-span-full">
+            <div class="w-10 h-10 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center mx-auto text-lg font-bold">📅</div>
+            <h4 class="text-sm font-bold text-slate-800">No se encontraron eventos para los filtros seleccionados</h4>
+            <p class="text-xs text-slate-500 max-w-md mx-auto">Probá ampliando el rango de días ("Todo el año") o cambiando el texto del buscador.</p>
+          </div>`;
+        return;
+      }
+
+      let html = '';
+      items.forEach(item => {
+        const isToday = item.diasFaltantes === 0;
+        const badgeDias = isToday
+          ? `<span class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-black bg-red-600 text-white animate-pulse">🚨 ¡HOY!</span>`
+          : `<span class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-extrabold bg-blue-50 text-blue-700 border border-blue-200">⏳ en ${item.diasFaltantes} día(s)</span>`;
+
+        if (item.tipo === 'efemeride') {
+          html += `
+            <div class="bg-white p-5 rounded-2xl border ${isToday ? 'border-red-300 ring-2 ring-red-100' : 'border-slate-200'} shadow-xs hover:shadow-md transition-all flex flex-col justify-between space-y-3">
+              <div class="space-y-2">
+                <div class="flex justify-between items-start gap-2">
+                  ${badgeDias}
+                  <span class="text-xs font-bold text-slate-400">📅 ${item.fechaFormateada}</span>
+                </div>
+                <h4 class="text-base font-black text-slate-900 leading-snug">📌 ${escHtml(item.titulo)}</h4>
+                <div class="text-xs text-slate-500 space-y-1">
+                  <p>🏛️ <strong>Ámbito:</strong> ${escHtml(item.ambito || 'Escolar')}</p>
+                  ${item.sugerencia ? `<p class="text-slate-600 bg-slate-50 p-2 rounded-lg border border-slate-100">💡 <strong>Sugerencia de Prensa:</strong> ${escHtml(item.sugerencia)}</p>` : ''}
+                </div>
+              </div>
+              <div class="pt-2 border-t border-slate-100 flex justify-between items-center text-[11px] text-slate-400">
+                <span>Efeméride Institucional / Escolar</span>
+                <a href="https://wa.me/5493624408292?text=${encodeURIComponent(`Hola, envío material sobre la efeméride: ${item.titulo}`)}" target="_blank" rel="noopener" class="text-blue-600 hover:text-blue-700 font-bold">📲 Enviar material →</a>
+              </div>
+            </div>
+          `;
+        } else {
+          html += `
+            <div class="bg-white p-5 rounded-2xl border ${isToday ? 'border-amber-400 ring-2 ring-amber-100' : 'border-slate-200'} shadow-xs hover:shadow-md transition-all flex flex-col justify-between space-y-3">
+              <div class="space-y-2">
+                <div class="flex justify-between items-start gap-2">
+                  ${badgeDias}
+                  <span class="text-xs font-bold text-slate-400">🎂 ${item.fechaFormateada}</span>
+                </div>
+                <h4 class="text-base font-black text-slate-900 leading-snug">🏫 ${escHtml(item.nombre)}</h4>
+                <div class="text-xs text-slate-500 space-y-1">
+                  ${item.localidad || item.regional ? `<p>📍 <strong>Ubicación:</strong> ${escHtml(item.localidad)} ${item.regional ? `(${escHtml(item.regional)})` : ''}</p>` : ''}
+                  ${item.aniosCumplidos ? `<p class="text-indigo-700 font-bold">🎉 Cumple ${item.aniosCumplidos}° Aniversario ${item.anioFundacion ? `(Fundada en ${item.anioFundacion})` : ''}</p>` : ''}
+                </div>
+              </div>
+              <div class="pt-2 border-t border-slate-100 flex justify-between items-center text-[11px] text-slate-400">
+                <span>Aniversario Institucional</span>
+                <a href="https://wa.me/5493624408292?text=${encodeURIComponent(`Hola, envío fotos por el aniversario de: ${item.nombre}`)}" target="_blank" rel="noopener" class="text-emerald-600 hover:text-emerald-700 font-bold">📸 Saludar / Enviar fotos →</a>
+              </div>
+            </div>
+          `;
+        }
+      });
+
+      container.innerHTML = html;
     }
 
     // STATE Y LÓGICA DE SUPERVISORES
@@ -429,9 +625,6 @@
       nivel: 'TODOS',
       loaded: false
     };
-
-    const escHtml = (s = '') => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    const normText = (s = '') => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 
     async function fetchSupervisoresData() {
       const loading = document.getElementById('sup-loading');

@@ -725,6 +725,65 @@ async function obtenerResumenProximosDias(diasLimit = 15) {
     return msg;
 }
 
+async function obtenerAgendaJSON(options = {}) {
+    const { diasLimit = 365, tipo = "todos", q = "" } = options;
+    const datos = await cargarDatosSheets(false);
+    const hoy = getFechaArgentina();
+
+    let items = [];
+
+    if (tipo === "todos" || tipo === "efemeride") {
+        for (const ef of datos.efemerides) {
+            const diasFaltantes = obtenerDiasHastaFecha(ef.dia, ef.mes);
+            items.push({
+                ...ef,
+                diasFaltantes,
+                fechaFormateada: `${String(ef.dia).padStart(2, '0')}/${String(ef.mes).padStart(2, '0')}`
+            });
+        }
+    }
+
+    if (tipo === "todos" || tipo === "institucion") {
+        for (const inst of datos.instituciones) {
+            const diasFaltantes = obtenerDiasHastaFecha(inst.dia, inst.mes);
+            let aniosCumplidos = null;
+            if (inst.anioFundacion) {
+                aniosCumplidos = hoy.year - inst.anioFundacion;
+            }
+            items.push({
+                ...inst,
+                diasFaltantes,
+                aniosCumplidos,
+                fechaFormateada: `${String(inst.dia).padStart(2, '0')}/${String(inst.mes).padStart(2, '0')}`
+            });
+        }
+    }
+
+    // Filtrar por límite de días si se especifica (diasLimit > 0)
+    if (diasLimit && diasLimit > 0) {
+        items = items.filter(item => item.diasFaltantes >= 0 && item.diasFaltantes <= diasLimit);
+    }
+
+    // Filtrar por q (búsqueda)
+    if (q) {
+        const queryL = q.toLowerCase().trim();
+        items = items.filter(item => {
+            const strSearch = (item.titulo || item.nombre || '') + ' ' + (item.ambito || item.localidad || '') + ' ' + (item.regional || '');
+            return strSearch.toLowerCase().includes(queryL);
+        });
+    }
+
+    // Ordenar por días faltantes (eventos más próximos primero)
+    items.sort((a, b) => a.diasFaltantes - b.diasFaltantes);
+
+    return {
+        status: "success",
+        total: items.length,
+        actualizado: new Date(cacheAgenda.lastFetch || Date.now()).toISOString(),
+        results: items
+    };
+}
+
 
 function obtenerMensajeInterno(message) {
     if (!message) return null;
@@ -1327,6 +1386,29 @@ function iniciarHttpServer() {
                 console.error("Error en API de supervisores:", errSup);
                 res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
                 res.end(JSON.stringify({ status: "error", message: errSup.message }));
+                return;
+            }
+        }
+
+        if (req.method === "GET" && req.url.startsWith("/api/agenda")) {
+            try {
+                const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+                const diasParam = urlObj.searchParams.get("dias");
+                const diasLimit = (diasParam !== null && diasParam !== "365" && diasParam !== "all") ? parseInt(diasParam, 10) : 365;
+                const tipo = urlObj.searchParams.get("tipo") || "todos";
+                const q = urlObj.searchParams.get("q") || "";
+
+                const payload = await obtenerAgendaJSON({ diasLimit, tipo, q });
+                res.writeHead(200, { 
+                    "Content-Type": "application/json; charset=utf-8",
+                    "Cache-Control": "public, max-age=60"
+                });
+                res.end(JSON.stringify(payload));
+                return;
+            } catch (errAgenda) {
+                console.error("Error en API de agenda:", errAgenda);
+                res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+                res.end(JSON.stringify({ status: "error", message: errAgenda.message }));
                 return;
             }
         }
