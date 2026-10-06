@@ -4,13 +4,41 @@
 
 import { google } from "googleapis";
 
+import fs from "fs";
+
 const SUPERVISORES_SHEET_ID = process.env.SUPERVISORES_SHEET_ID || '1X369rO-LEQSRZ202wrq4xOw9Z5e2xiiV-T0pBSX-pss';
 const SHEET_GID = process.env.SUPERVISORES_SHEET_GID || '1559143719';
 const SHEET_TABS = (process.env.SUPERVISORES_SHEET_TABS || '')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // Caché local de 6 horas
 const FETCH_TIMEOUT_MS = 10 * 1000;  // 10 segundos timeout
+const CACHE_FILE_SUPERVISORES = "./cache_supervisores.json";
+
+function cargarCacheDiscoSupervisores() {
+  if (fs.existsSync(CACHE_FILE_SUPERVISORES)) {
+    try {
+      const raw = fs.readFileSync(CACHE_FILE_SUPERVISORES, "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.data) {
+        cache = { payload: parsed, expira: Date.now() + CACHE_TTL_MS };
+        console.log(`💾 [DISCO SUPERVISORES] Caché cargada desde disco (${parsed.total || 0} supervisores).`);
+        return parsed;
+      }
+    } catch (e) {
+      console.error("[supervisores] Error leyendo cache_supervisores.json:", e.message);
+    }
+  }
+  return null;
+}
+
+function guardarCacheDiscoSupervisores(payload) {
+  try {
+    fs.writeFileSync(CACHE_FILE_SUPERVISORES, JSON.stringify(payload), "utf8");
+  } catch (e) {
+    console.error("[supervisores] Error guardando cache_supervisores.json:", e.message);
+  }
+}
 
 // ---------- Utilidades de texto ----------
 const sinAcentos = (s = '') => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -228,16 +256,25 @@ async function cargar(sheetsClient = null) {
 
 export async function obtenerSupervisores(sheetsClient = null, { forzar = false } = {}) {
   const ahora = Date.now();
+  if (!cache.payload) {
+    cargarCacheDiscoSupervisores();
+  }
   if (!forzar && cache.payload && ahora < cache.expira) return cache.payload;
   if (enVuelo) return enVuelo;
 
   enVuelo = cargar(sheetsClient)
     .then((payload) => {
-      cache = { payload, expira: Date.now() + CACHE_TTL_MS };
-      return payload;
+      if (payload && payload.total > 0) {
+        cache = { payload, expira: Date.now() + CACHE_TTL_MS };
+        guardarCacheDiscoSupervisores(payload);
+      }
+      return cache.payload || payload;
     })
     .catch((err) => {
-      console.error('[supervisores] Error al actualizar catálogo:', err.message);
+      console.error('[supervisores] Error al actualizar catálogo de Sheets:', err.message);
+      if (!cache.payload) {
+        cargarCacheDiscoSupervisores();
+      }
       if (cache.payload) return { ...cache.payload, stale: true };
       throw err;
     })
@@ -246,6 +283,7 @@ export async function obtenerSupervisores(sheetsClient = null, { forzar = false 
 }
 
 export function precalentarSupervisores(sheetsClient = null) {
+  cargarCacheDiscoSupervisores();
   obtenerSupervisores(sheetsClient).catch(() => {});
 }
 

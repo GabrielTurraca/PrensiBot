@@ -460,6 +460,37 @@ let cacheAgenda = {
     lastFetch: 0
 };
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // Caché local de 6 horas
+const CACHE_AGENDA_FILE = "./cache_agenda.json";
+
+async function cargarCacheDiscoAgenda() {
+    if (existsSync(CACHE_AGENDA_FILE)) {
+        try {
+            const raw = await fsPromises.readFile(CACHE_AGENDA_FILE, "utf8");
+            const parsed = JSON.parse(raw);
+            if (parsed && Array.isArray(parsed.efemerides) && Array.isArray(parsed.instituciones)) {
+                cacheAgenda = {
+                    efemerides: parsed.efemerides,
+                    instituciones: parsed.instituciones,
+                    lastFetch: parsed.lastFetch || Date.now()
+                };
+                console.log(`💾 [DISCO AGENDA] Caché cargada desde disco (${parsed.efemerides.length} efemérides y ${parsed.instituciones.length} instituciones).`);
+            }
+        } catch (e) {
+            console.error("❌ Error al cargar cache_agenda.json desde disco:", e.message);
+        }
+    }
+}
+
+async function guardarCacheDiscoAgenda() {
+    try {
+        await fsPromises.writeFile(CACHE_AGENDA_FILE, JSON.stringify(cacheAgenda), "utf8");
+    } catch (e) {
+        console.error("❌ Error al guardar cache_agenda.json en disco:", e.message);
+    }
+}
+
+// Cargar caché de disco al iniciar
+await cargarCacheDiscoAgenda();
 
 function parseFechaDiaMes(fechaRaw) {
     if (!fechaRaw) return null;
@@ -534,6 +565,9 @@ function parseCSVRow(line) {
 
 async function cargarDatosSheets(forceRefresh = false) {
     const ahora = Date.now();
+    if (cacheAgenda.efemerides.length === 0 && cacheAgenda.instituciones.length === 0) {
+        await cargarCacheDiscoAgenda();
+    }
     if (!forceRefresh && cacheAgenda.lastFetch > 0 && (ahora - cacheAgenda.lastFetch < CACHE_TTL_MS)) {
         return cacheAgenda;
     }
@@ -544,7 +578,7 @@ async function cargarDatosSheets(forceRefresh = false) {
     }
 
     try {
-        console.log("📊 [SHEETS] Consultando Google Sheets...");
+        console.log("📊 [SHEETS] Consultando Google Sheets (Agenda)...");
         
         const urlEf = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent("Efemérides")}`;
         const resEf = await fetch(urlEf);
@@ -601,15 +635,21 @@ async function cargarDatosSheets(forceRefresh = false) {
             });
         }
 
-        cacheAgenda = {
-            efemerides,
-            instituciones,
-            lastFetch: ahora
-        };
-        console.log(`✅ [SHEETS] Caché de agenda actualizada: ${efemerides.length} efemérides y ${instituciones.length} instituciones activas.`);
+        if (efemerides.length > 0 || instituciones.length > 0) {
+            cacheAgenda = {
+                efemerides,
+                instituciones,
+                lastFetch: ahora
+            };
+            await guardarCacheDiscoAgenda();
+            console.log(`✅ [SHEETS] Caché de agenda actualizada y guardada en disco: ${efemerides.length} efemérides y ${instituciones.length} instituciones activas.`);
+        }
         return cacheAgenda;
     } catch (e) {
-        console.error("❌ [SHEETS] Error leyendo Google Sheets:", e.message);
+        console.error("❌ [SHEETS] Error leyendo Google Sheets (Agenda):", e.message);
+        if (cacheAgenda.efemerides.length === 0 && cacheAgenda.instituciones.length === 0) {
+            await cargarCacheDiscoAgenda();
+        }
         return cacheAgenda;
     }
 }
@@ -1296,6 +1336,22 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
         }
     });
 }
+
+// Cron nocturno de baja actividad (03:00 AM ART): Pre-carga y refresco silencioso de Agenda, Efemérides y Supervisores
+cron.schedule('0 3 * * *', async () => {
+    console.log("🌙 [CRON NOCTURNO 03:00 AM] Refrescando datos de Agenda, Efemérides y Supervisores...");
+    try {
+        await cargarDatosSheets(true);
+        if (sheets) {
+            await obtenerSupervisores(sheets, { forzar: true });
+        }
+        console.log("✅ [CRON NOCTURNO 03:00 AM] Refresco automático nocturno completado exitosamente.");
+    } catch (err) {
+        console.error("❌ [CRON NOCTURNO 03:00 AM] Error durante refresco nocturno:", err.message);
+    }
+}, {
+    timezone: "America/Argentina/Buenos_Aires"
+});
 
 // Cron diario matutino (07:00 AM ART): Verificación de efemérides y aniversarios institucionales
 cron.schedule('0 7 * * *', async () => {
