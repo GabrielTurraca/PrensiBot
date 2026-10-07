@@ -1496,8 +1496,8 @@ function iniciarHttpServer() {
             return;
         }
 
-        // 2. Servir rutas canónicas de la Lista Blanca con Meta Tags Dinámicos
-        if (req.method === "GET" && (CANONICAL_ROUTES[pathname] || pathname === "/index.html")) {
+        // 2. Servir rutas canónicas de la Lista Blanca con Meta Tags Dinámicos (Soporta GET y HEAD)
+        if ((req.method === "GET" || req.method === "HEAD") && (CANONICAL_ROUTES[pathname] || pathname === "/index.html")) {
             const routeData = CANONICAL_ROUTES[pathname] || CANONICAL_ROUTES["/"];
             try {
                 const htmlPath = "./public/index.html";
@@ -1506,7 +1506,11 @@ function iniciarHttpServer() {
                     const fullUrl = `https://${req.headers.host || 'prensi.macrointell.com.ar'}${pathname === '/index.html' ? '/' : pathname}${search}`;
                     const finalHtml = generarHTMLConMetaTags(rawContent, routeData, req.headers.host, fullUrl);
                     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-                    res.end(finalHtml);
+                    if (req.method === "HEAD") {
+                        res.end();
+                    } else {
+                        res.end(finalHtml);
+                    }
                     return;
                 }
             } catch (err) {
