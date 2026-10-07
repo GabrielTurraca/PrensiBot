@@ -1392,15 +1392,121 @@ cron.schedule('0 8-19 * * 1-5', async () => {
     timezone: "America/Argentina/Buenos_Aires"
 });
 
+const CANONICAL_ROUTES = {
+    "/": {
+        title: "Dirección Regional Educativa Regiones X-A y X-B - Portal de Consultas",
+        description: "Portal Oficial de Consultas Institucionales y Emisión de Certificados de la DRE Regiones X-A y X-B (Provincia del Chaco).",
+        canonicalPath: "/"
+    },
+    "/supervisores": {
+        title: "Directorio de Supervisores | DRE Regiones X-A y X-B",
+        description: "Directorio oficial de supervisores y autoridades educativas de la DRE Regiones X-A y X-B por Regional y Nivel.",
+        canonicalPath: "/supervisores"
+    },
+    "/instituciones": {
+        title: "Instituciones Educativas | DRE Regiones X-A y X-B",
+        description: "Directorio oficial de escuelas e instituciones educativas pertenecientes a la DRE Regiones X-A y X-B.",
+        canonicalPath: "/instituciones"
+    },
+    "/proyectos": {
+        title: "Proyectos Presentados | DRE Regiones X-A y X-B",
+        description: "Iniciativas pedagógicas, institucionales y comunitarias impulsadas y acompañadas por la DRE Regiones X-A y X-B.",
+        canonicalPath: "/proyectos"
+    },
+    "/efemerides": {
+        title: "Agenda & Efemérides | DRE Regiones X-A y X-B",
+        description: "Calendario de efemérides y aniversarios institucionales de las escuelas de la DRE Regiones X-A y X-B.",
+        canonicalPath: "/efemerides"
+    },
+    "/documentacion": {
+        title: "Documentación Institucional | DRE Regiones X-A y X-B",
+        description: "Descarga de formularios, disposiciones y documentos institucionales oficiales de la DRE Regiones X-A y X-B.",
+        canonicalPath: "/documentacion"
+    },
+    "/certificados": {
+        title: "Certificados & Constancias | DRE Regiones X-A y X-B",
+        description: "Buscador y validador oficial de certificados y constancias emitidos por la DRE Regiones X-A y X-B.",
+        canonicalPath: "/certificados"
+    }
+};
+
+const ROUTE_ALIASES = {
+    "/listaSupervisores": "/supervisores",
+    "/supervisoras": "/supervisores",
+    "/escuelas": "/instituciones",
+    "/listaInstituciones": "/instituciones",
+    "/proyectos-presentados": "/proyectos",
+    "/agenda": "/efemerides",
+    "/documentos": "/documentacion",
+    "/constancias": "/certificados"
+};
+
+function escapeHtmlAttr(str = "") {
+    return String(str).replace(/[&<>"']/g, c => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+    }[c]));
+}
+
+function generarHTMLConMetaTags(rawHtml, routeData, requestHost, fullUrl) {
+    let html = rawHtml;
+    const titleText = routeData.title;
+    const descText = routeData.description;
+    const host = requestHost || "prensi.macrointell.com.ar";
+    const imageUrl = `https://${host}/logo.png`;
+
+    // Reemplazar <title>
+    html = html.replace(/<title>.*?<\/title>/i, `<title>${escapeHtmlAttr(titleText)}</title>`);
+
+    // Remover meta tags OG / Twitter previos para evitar duplicación
+    html = html.replace(/<meta\s+property=["']og:[^"']+["'][^>]*>/gi, '');
+    html = html.replace(/<meta\s+name=["']twitter:[^"']+["'][^>]*>/gi, '');
+
+    const ogTags = `
+  <!-- Meta tags dinámicos para vistas previas en WhatsApp y redes sociales -->
+  <meta property="og:title" content="${escapeHtmlAttr(titleText)}">
+  <meta property="og:description" content="${escapeHtmlAttr(descText)}">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="${escapeHtmlAttr(fullUrl)}">
+  <meta property="og:image" content="${escapeHtmlAttr(imageUrl)}">
+  <meta property="og:site_name" content="DRE Regiones X-A y X-B">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="${escapeHtmlAttr(titleText)}">
+  <meta name="twitter:description" content="${escapeHtmlAttr(descText)}">
+  <meta name="twitter:image" content="${escapeHtmlAttr(imageUrl)}">
+`;
+
+    return html.replace('</head>', `${ogTags}\n</head>`);
+}
+
 function iniciarHttpServer() {
     const server = http.createServer(async (req, res) => {
-        if (req.method === "GET" && (req.url === "/" || req.url === "/index.html")) {
+        const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+        const pathname = urlObj.pathname;
+        const search = urlObj.search || "";
+
+        // 1. Redirecciones 301 Permanentes para Alias (Preservando Query Parameters)
+        if (ROUTE_ALIASES[pathname]) {
+            const targetCanonical = ROUTE_ALIASES[pathname] + search;
+            res.writeHead(301, { "Location": targetCanonical });
+            res.end();
+            return;
+        }
+
+        // 2. Servir rutas canónicas de la Lista Blanca con Meta Tags Dinámicos
+        if (req.method === "GET" && (CANONICAL_ROUTES[pathname] || pathname === "/index.html")) {
+            const routeData = CANONICAL_ROUTES[pathname] || CANONICAL_ROUTES["/"];
             try {
                 const htmlPath = "./public/index.html";
                 if (existsSync(htmlPath)) {
-                    const content = await fsPromises.readFile(htmlPath, "utf8");
+                    const rawContent = await fsPromises.readFile(htmlPath, "utf8");
+                    const fullUrl = `https://${req.headers.host || 'prensi.macrointell.com.ar'}${pathname === '/index.html' ? '/' : pathname}${search}`;
+                    const finalHtml = generarHTMLConMetaTags(rawContent, routeData, req.headers.host, fullUrl);
                     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-                    res.end(content);
+                    res.end(finalHtml);
                     return;
                 }
             } catch (err) {
@@ -1408,9 +1514,9 @@ function iniciarHttpServer() {
             }
         }
 
+        // 3. Rutas de la API
         if (req.method === "GET" && req.url.startsWith("/api/certificados")) {
             try {
-                const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
                 const queryParam = urlObj.searchParams.get("dni") || urlObj.searchParams.get("q") || "";
                 const dataCert = await buscarCertificados(drive, CERTIFICADOS_FOLDER_ID, queryParam);
                 res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
@@ -1426,7 +1532,6 @@ function iniciarHttpServer() {
 
         if (req.method === "GET" && req.url.startsWith("/api/supervisores")) {
             try {
-                const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
                 const base = await obtenerSupervisores(sheets);
                 const region = urlObj.searchParams.get("region");
                 const nivel = urlObj.searchParams.get("nivel");
@@ -1448,7 +1553,6 @@ function iniciarHttpServer() {
 
         if (req.method === "GET" && req.url.startsWith("/api/agenda")) {
             try {
-                const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
                 const diasParam = urlObj.searchParams.get("dias");
                 const diasLimit = (diasParam !== null && diasParam !== "365" && diasParam !== "all") ? parseInt(diasParam, 10) : 365;
                 const tipo = urlObj.searchParams.get("tipo") || "todos";
@@ -1491,6 +1595,7 @@ function iniciarHttpServer() {
                 res.end(JSON.stringify({ status: "error", message: "Invalid request" }));
             });
         } else {
+            // 4. Archivos estáticos y manejo 404 (el resto de rutas no listadas en lista blanca darán 404)
             servirArchivoEstatico(req, res);
         }
     });

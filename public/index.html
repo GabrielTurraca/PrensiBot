@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dirección Regional Educativa X-A y X-B - Portal de Consultas</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="/styles.css">
 </head>
 <body class="bg-slate-50 text-slate-900 antialiased min-h-screen font-sans">
 
@@ -440,25 +440,76 @@
       renderProyectos(estado);
     }
 
-    function switchTab(tabId) {
+    const TAB_TO_PATH = {
+      instituciones: '/instituciones',
+      proyectos: '/proyectos',
+      efemerides: '/efemerides',
+      documentacion: '/documentacion',
+      certificados: '/certificados',
+      supervisores: '/supervisores'
+    };
+
+    const PATH_TO_TAB = {
+      '/': 'instituciones',
+      '/instituciones': 'instituciones',
+      '/escuelas': 'instituciones',
+      '/listainstituciones': 'instituciones',
+      '/proyectos': 'proyectos',
+      '/proyectos-presentados': 'proyectos',
+      '/efemerides': 'efemerides',
+      '/agenda': 'efemerides',
+      '/documentacion': 'documentacion',
+      '/documentos': 'documentacion',
+      '/certificados': 'certificados',
+      '/constancias': 'certificados',
+      '/supervisores': 'supervisores',
+      '/listasupervisores': 'supervisores',
+      '/supervisoras': 'supervisores'
+    };
+
+    const TAB_TITLES = {
+      instituciones: 'Instituciones Educativas | DRE Regiones X-A y X-B',
+      proyectos: 'Proyectos Presentados | DRE Regiones X-A y X-B',
+      efemerides: 'Agenda & Efemérides | DRE Regiones X-A y X-B',
+      documentacion: 'Documentación Institucional | DRE Regiones X-A y X-B',
+      certificados: 'Certificados & Constancias | DRE Regiones X-A y X-B',
+      supervisores: 'Directorio de Supervisores | DRE Regiones X-A y X-B'
+    };
+
+    function switchTab(tabId, pushState = true) {
+      const targetTab = TAB_TO_PATH[tabId] ? tabId : 'instituciones';
+
       document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.classList.remove('border-blue-600', 'text-blue-600', 'active-tab');
         btn.classList.add('border-transparent', 'text-slate-500');
       });
       document.querySelectorAll('main > section').forEach(sec => sec.classList.add('hidden'));
 
-      const activeBtn = document.getElementById(`tab-${tabId}`);
+      const activeBtn = document.getElementById(`tab-${targetTab}`);
       if (activeBtn) {
         activeBtn.classList.add('border-blue-600', 'text-blue-600', 'active-tab');
         activeBtn.classList.remove('border-transparent', 'text-slate-500');
       }
 
-      const sec = document.getElementById(`sec-${tabId}`);
+      const sec = document.getElementById(`sec-${targetTab}`);
       if (sec) sec.classList.remove('hidden');
 
-      if (tabId === 'proyectos') renderProyectos('TODOS');
-      if (tabId === 'efemerides' && !efemeridesState.loaded) fetchEfemeridesData();
-      if (tabId === 'supervisores' && !supState.loaded) fetchSupervisoresData();
+      if (targetTab === 'proyectos') renderProyectos('TODOS');
+      if (targetTab === 'efemerides' && !efemeridesState.loaded) fetchEfemeridesData();
+      if (targetTab === 'supervisores' && !supState.loaded) fetchSupervisoresData();
+
+      const canonicalPath = TAB_TO_PATH[targetTab] || '/';
+      if (pushState) {
+        const search = window.location.search || '';
+        const newUrl = canonicalPath + search;
+        if (window.location.pathname !== canonicalPath) {
+          history.pushState({ tabId: targetTab }, '', newUrl);
+        }
+      }
+
+      if (TAB_TITLES[targetTab]) {
+        document.title = TAB_TITLES[targetTab];
+      }
     }
 
     // STATE Y LÓGICA DE AGENDA & EFEMÉRIDES
@@ -936,18 +987,32 @@
           </div>
         `;
       }
+    function getTabFromUrl() {
+      const path = (window.location.pathname || '/').toLowerCase();
+      if (PATH_TO_TAB[path]) return PATH_TO_TAB[path];
+
+      const hash = (window.location.hash || '').replace('#', '').toLowerCase();
+      if (PATH_TO_TAB['/' + hash]) return PATH_TO_TAB['/' + hash];
+
+      return 'instituciones';
     }
 
+    window.addEventListener('popstate', () => {
+      const tabId = getTabFromUrl();
+      switchTab(tabId, false);
+    });
+
     window.addEventListener('DOMContentLoaded', () => {
+      const initialTab = getTabFromUrl();
+      switchTab(initialTab, false);
+
       const params = new URLSearchParams(window.location.search);
       const dniParam = params.get('verificar') || params.get('dni') || params.get('q');
       if (dniParam) {
-        switchTab('certificados');
+        switchTab('certificados', false);
         buscarCertificado(dniParam);
       }
     });
-  </script>
-
   </script>
 </body>
 </html>
