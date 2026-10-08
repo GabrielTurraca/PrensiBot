@@ -836,61 +836,6 @@
       }
     }
 
-    async function buscarCertificado(queryParam) {
-      const inputVal = queryParam || document.getElementById('dni-input').value.trim();
-      if (!inputVal) {
-        alert('Por favor ingresá un número de DNI o código válido.');
-        return;
-      }
-      document.getElementById('dni-input').value = inputVal;
-
-      const container = document.getElementById('cert-result-container');
-      const loading = document.getElementById('cert-loading');
-
-      container.classList.add('hidden');
-      loading.classList.remove('hidden');
-
-      try {
-        const res = await fetch(`/api/certificados?dni=${encodeURIComponent(inputVal)}`);
-        const data = await res.json();
-        loading.classList.add('hidden');
-        container.classList.remove('hidden');
-
-        if (data.status === 'success' && data.results && data.results.length > 0) {
-          let html = '';
-          data.results.forEach((item) => {
-            const downloadUrl = item.webContentLink || item.webViewLink;
-            html += `
-              <div class="p-5 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 space-y-4">
-                <div class="flex justify-between items-start flex-wrap gap-2">
-                  <div>
-                    <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-emerald-600 text-white">✓ Constancia Registrada</span>
-                    <h4 class="text-base font-bold text-slate-900 mt-2">${item.name.replace(/\.pdf$/i, '')}</h4>
-                    <p class="text-xs text-slate-500">Emitido por: Dirección Regional Educativa Regiones X-A y X-B</p>
-                  </div>
-                  <span class="text-xs font-black text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-lg">Doc: PDF</span>
-                </div>
-                <div class="pt-2 flex flex-wrap justify-end gap-3">
-                  <a href="${item.webViewLink}" target="_blank" rel="noopener" class="px-4 py-2.5 bg-slate-100 text-slate-800 text-xs font-bold rounded-xl border border-slate-200">👁️ Vista Previa</a>
-                  <a href="${downloadUrl}" target="_blank" rel="noopener" class="px-5 py-2.5 bg-emerald-600 text-white text-xs font-bold rounded-xl shadow-md">⬇️ Descargar PDF</a>
-                </div>
-              </div>
-            `;
-          });
-          container.innerHTML = html;
-        } else {
-          container.innerHTML = `
-            <div class="p-6 text-center space-y-3 rounded-2xl border border-amber-500/30 bg-amber-500/5">
-              <h4 class="text-sm font-bold text-slate-800">No se encontró ninguna constancia para el DNI: "${inputVal}"</h4>
-            </div>
-          `;
-        }
-      } catch (err) {
-        loading.classList.add('hidden');
-        container.classList.remove('hidden');
-      }
-    }
-
     function filterInstituciones() {
       const q = document.getElementById('search-inst').value.toLowerCase().trim();
       const cards = document.querySelectorAll('.inst-card');
@@ -987,8 +932,11 @@
           </div>
         `;
       }
+    }
+
     function getTabFromUrl() {
-      const path = (window.location.pathname || '/').toLowerCase();
+      const rawPath = (window.location.pathname || '/').toLowerCase();
+      const path = rawPath.length > 1 ? rawPath.replace(/\/+$/, '') : rawPath;
       if (PATH_TO_TAB[path]) return PATH_TO_TAB[path];
 
       const hash = (window.location.hash || '').replace('#', '').toLowerCase();
