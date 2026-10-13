@@ -155,19 +155,18 @@ let sockGlobal = null;
 const sesiones = new Map();
 const TEMP_DIR = "./temp";
 
-async function limpiarArchivosHuerfanos() {
+async function limpiarArchivosHuerfanos(maxEdadMs = 24 * 60 * 60 * 1000) {
     if (!existsSync(TEMP_DIR)) return;
     try {
         const archivos = await fsPromises.readdir(TEMP_DIR);
         const ahora = Date.now();
-        const UN_HORA_MS = 60 * 60 * 1000; // 1 hora en ms
         let borrados = 0;
 
         for (const archivo of archivos) {
             const pathArchivo = `${TEMP_DIR}/${archivo}`;
             try {
                 const stat = await fsPromises.stat(pathArchivo);
-                if (stat.isFile() && (ahora - stat.mtimeMs > UN_HORA_MS)) {
+                if (stat.isFile() && (ahora - stat.mtimeMs > maxEdadMs)) {
                     await fsPromises.unlink(pathArchivo);
                     borrados++;
                 }
@@ -175,10 +174,11 @@ async function limpiarArchivosHuerfanos() {
                 console.error(`❌ Error al procesar archivo temporal ${archivo}:`, e);
             }
         }
+        const horasLimite = (maxEdadMs / (60 * 60 * 1000)).toFixed(0);
         if (borrados > 0) {
-            console.log(`🧹 Limpieza al iniciar: Se eliminaron ${borrados} archivo(s) huérfano(s) de ./temp/`);
+            console.log(`🧹 Limpieza de archivos temporales: Se eliminaron ${borrados} archivo(s) huérfano(s) de ./temp/ (> ${horasLimite}h)`);
         } else {
-            console.log(`🧹 Limpieza al iniciar: No se encontraron archivos huérfanos en ./temp/`);
+            console.log(`🧹 Limpieza de archivos temporales: No se encontraron archivos huérfanos en ./temp/ (> ${horasLimite}h)`);
         }
     } catch (e) {
         console.error("❌ Error al ejecutar limpieza de archivos huérfanos:", e);
@@ -850,6 +850,7 @@ let reconnectAttempts = 0;
 let reconnectionTimestamps = [];
 
 let cachedBaileysVersion = null;
+let limpiezaInicialEjecutada = false;
 
 async function iniciarBot() {
     console.log("🚀 Iniciando bot...");
@@ -861,8 +862,9 @@ async function iniciarBot() {
         await fsPromises.mkdir(TEMP_DIR, { recursive: true });
     }
     
-    if (!drive) {
-        await limpiarArchivosHuerfanos();
+    if (!limpiezaInicialEjecutada) {
+        limpiezaInicialEjecutada = true;
+        await limpiarArchivosHuerfanos(24 * 60 * 60 * 1000);
     }
     
     const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
@@ -1337,7 +1339,7 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
     });
 }
 
-// Cron nocturno de baja actividad (03:00 AM ART): Pre-carga y refresco silencioso de Agenda, Efemérides y Supervisores
+// Cron nocturno de baja actividad (03:00 AM ART): Pre-carga y refresco silencioso de Agenda, Efemérides y Supervisores + Limpieza de archivos temporales huérfanos
 cron.schedule('0 3 * * *', async () => {
     console.log("🌙 [CRON NOCTURNO 03:00 AM] Refrescando datos de Agenda, Efemérides y Supervisores...");
     try {
@@ -1348,6 +1350,12 @@ cron.schedule('0 3 * * *', async () => {
         console.log("✅ [CRON NOCTURNO 03:00 AM] Refresco automático nocturno completado exitosamente.");
     } catch (err) {
         console.error("❌ [CRON NOCTURNO 03:00 AM] Error durante refresco nocturno:", err.message);
+    }
+
+    try {
+        await limpiarArchivosHuerfanos(24 * 60 * 60 * 1000);
+    } catch (cleanErr) {
+        console.error("❌ [CRON NOCTURNO 03:00 AM] Error durante limpieza de archivos temporales:", cleanErr.message);
     }
 }, {
     timezone: "America/Argentina/Buenos_Aires"
