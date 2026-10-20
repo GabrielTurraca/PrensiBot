@@ -22,6 +22,20 @@ Este archivo sirve como nexo de comunicación entre **Gemini (Navegador)**, **Cl
 
 ## ✅ Tareas Completadas
 
+- [x] **[2026-10-20] Mejoras en Certificados, Flujo de Prensa en WhatsApp, Seguridad y Limpieza de Código**
+  - **Mejoras en Certificados (`certificados-optimizado.js`, `app.js`, `public/index.html`)**:
+    - Descubrimiento e indexación automática de subcarpetas de primer nivel dentro de `CERTIFICADOS_FOLDER_ID`.
+    - Enriquecimiento de resultados con `dni`, `evento` (nombre de carpeta/subcarpeta o extraído del nombre de archivo) y `size`.
+    - Nuevo comando de WhatsApp `#certificado <DNI>` / `#constancia <DNI>` (en privado y grupos) con enlaces directos de descarga y validación en el portal.
+    - Agregado botón "🔗 Copiar enlace de validación" y sanitización HTML en las tarjetas de certificados del portal web.
+  - **Flujo de Prensa en WhatsApp (`app.js`)**:
+    - Captura de todos los textos y epígrafes enviados durante la sesión de 3 minutos y generación automática del archivo `info_envio_<timestamp>.txt` dentro de la carpeta correspondiente en Google Drive.
+    - Soporte ampliado para recepción de notas de voz/audios (`.ogg`, `.mp3`) y documentos generales (`.pdf`, `.docx`, `.xlsx`, `.pptx`, `.txt`).
+  - **Seguridad, Rendimiento y Limpieza (`app.js`, `Caddyfile`)**:
+    - Protegido el endpoint `POST /send-message` bloqueando acceso externo en `Caddyfile` y validando origen loopback (`127.0.0.1` sin proxy headers) o token `INTERNAL_API_TOKEN` en `app.js` (manteniendo compatibilidad con `create_instance.py`).
+    - Eliminadas ~175 líneas de código muerto en `app.js` (`obtenerCarpetasCertificados` y `buscarCertificadosEnDrive`).
+    - Implementada caché en memoria para `./public/index.html` con invalidación automática por `mtimeMs`, limpieza periódica del mapa `bienvenidaEnviada` y rotación automática de `structured.log` y `connection_events.log` (>10 MB).
+
 - [x] **[2026-10-01] Módulo Web e Integración API de Agenda & Efemérides**
   - **API HTTP Backend (`app.js`)**: Creado la función `obtenerAgendaJSON()` y el endpoint `/api/agenda` con soporte para parámetros de filtro (`dias`, `tipo`, `q`), parseo dinámico de días faltantes y cálculo automático de aniversarios institucionales.
   - **Portal Web (`public/index.html`)**: Reemplazado el contenedor estático por la pestaña interactiva "Agenda & Efemérides", incluyendo tarjetas dinámicas con badges de estado (🚨 ¡HOY!, ⏳ en X días), botones de acción directa hacia WhatsApp con mensajes precargados, chips de filtro por tipo (Efemérides / Aniversarios) y horizonte temporal (30, 60 o 365 días), además de buscador en tiempo real.

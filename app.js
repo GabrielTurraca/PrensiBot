@@ -12,7 +12,7 @@ import cron from "node-cron";
 import QRCode from "qrcode-terminal";
 import { Readable } from "stream";
 import http from "http";
-import { iniciarRefrescoPeriodico, buscarCertificados } from "./certificados-optimizado.js";
+import { iniciarRefrescoPeriodico, buscarCertificados, responderCertificadosWhatsApp } from "./certificados-optimizado.js";
 import { servirArchivoEstatico } from "./static-assets.js";
 import { obtenerSupervisores, filtrarSupervisores, precalentarSupervisores, responderSupervisoresWhatsApp } from "./supervisores-optimizado.js";
 
@@ -28,6 +28,8 @@ if (!process.env.PARENT_FOLDER_ID) {
 
 const SECRET_PATH = "./client_secret.json";
 const TOKEN_PATH = "./token.json";
+const DOMAIN_NAME = process.env.DOMAIN_NAME || "prensi.macrointell.com.ar";
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
 const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID || "1Q9Oi0PNtdMugEfYyB7Bn3m5poD0orB9e";
 const CERTIFICADOS_FOLDER_ID = process.env.CERTIFICADOS_FOLDER_ID || "1MGMFlTgHZS9ES3M3xS-o5G3XO_PxwyXG";
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID || "1oClGXPhsNW3y2y7UxLs80V5abTd-WgaAoGEwqNT9S5k";
@@ -230,180 +232,31 @@ async function crearCarpeta(nombreCarpeta) {
     return { id: response.data.id, link: `https://drive.google.com/drive/folders/${response.data.id}` };
 }
 
-let cacheCarpetasCertificados = {
-    folderMap: new Map(),
-    folderIds: [],
-    lastFetch: 0
-};
-const CACHE_FOLDER_TTL_MS = 10 * 60 * 1000; // 10 minutos de caché para estructura de carpetas de certificados
-
-async function obtenerCarpetasCertificados() {
+function limpiarMapaBienvenida(maxEdadMs = 24 * 60 * 60 * 1000) {
     const ahora = Date.now();
-    if (cacheCarpetasCertificados.lastFetch > 0 && (ahora - cacheCarpetasCertificados.lastFetch < CACHE_FOLDER_TTL_MS)) {
-        return cacheCarpetasCertificados;
-    }
-
-    if (!drive) {
-        await initGoogleDrive();
-    }
-    if (!drive) {
-        return cacheCarpetasCertificados;
-    }
-
-    const idsRaw = String(CERTIFICADOS_FOLDER_ID || "").split(",").map(s => s.trim()).filter(Boolean);
-    const folderMap = new Map();
-    const allFolderIds = new Set();
-
-    for (const rootId of idsRaw) {
-        allFolderIds.add(rootId);
-        let rootName = "Constancia DRE";
-        try {
-            const rootInfo = await drive.files.get({
-                fileId: rootId,
-                fields: "id, name"
-            });
-            if (rootInfo.data && rootInfo.data.name) {
-                rootName = rootInfo.data.name;
-            }
-        } catch (err) {
-            console.error(`⚠️ [DRIVE] Error al obtener nombre de la carpeta ${rootId}:`, err.message);
-        }
-        folderMap.set(rootId, { id: rootId, name: rootName });
-
-        try {
-            // Buscar subcarpetas directas (si las hubiera)
-            const res = await drive.files.list({
-                q: `mimeType='application/vnd.google-apps.folder' and '${rootId}' in parents and trashed=false`,
-                fields: "files(id, name)",
-                spaces: "drive",
-                pageSize: 100
-            });
-            if (res.data.files) {
-                for (const sub of res.data.files) {
-                    allFolderIds.add(sub.id);
-                    folderMap.set(sub.id, { id: sub.id, name: sub.name });
-                }
-            }
-        } catch (err) {
-            console.error(`⚠️ [DRIVE] Error al listar subcarpetas de ${rootId}:`, err.message);
+    for (const [jid, time] of bienvenidaEnviada.entries()) {
+        if (ahora - time > maxEdadMs) {
+            bienvenidaEnviada.delete(jid);
         }
     }
-
-    cacheCarpetasCertificados = {
-        folderMap,
-        folderIds: Array.from(allFolderIds),
-        lastFetch: ahora
-    };
-    return cacheCarpetasCertificados;
 }
 
-async function buscarCertificadosEnDrive(queryStr) {
-    if (!drive) {
-        await initGoogleDrive();
-    }
-    if (!drive) {
-        return [];
-    }
-
-    const rawStr = String(queryStr || "").trim();
-    if (!rawStr || rawStr.length < 3) {
-        return [];
-    }
-
-    // Normalizar DNI (ej. "44.123.456" -> "44123456")
-    const dniLimpio = rawStr.replace(/\D/g, "").trim();
-    const termSanitized = rawStr.replace(/['"\\]/g, "");
-
-    const terminosABuscar = [];
-    if (dniLimpio && dniLimpio.length >= 4) {
-        terminosABuscar.push(dniLimpio);
-    }
-    if (termSanitized && termSanitized !== dniLimpio && termSanitized.length >= 3) {
-        terminosABuscar.push(termSanitized);
-    }
-
-    if (terminosABuscar.length === 0) {
-        return [];
-    }
-
-    try {
-        const { folderIds, folderMap } = await obtenerCarpetasCertificados();
-        
-        let parentClause = "";
-        if (folderIds && folderIds.length > 0) {
-            const parentConditions = folderIds.map(id => `'${id}' in parents`).join(" or ");
-            parentClause = ` and (${parentConditions})`;
-        }
-
-        const nameConditions = terminosABuscar.map(t => `name contains '${t}'`).join(" or ");
-
-        // 1. Intento 1: Con filtro de carpeta y mimeType PDF
-        let qClause = `mimeType='application/pdf' and trashed=false and (${nameConditions})${parentClause}`;
-        console.log(`🔍 [DRIVE BUSCADOR 1] Query: "${qClause}"`);
-
-        let response = await drive.files.list({
-            q: qClause,
-            fields: "files(id, name, webViewLink, webContentLink, createdTime, size, parents, mimeType)",
-            spaces: "drive",
-            pageSize: 20
-        });
-
-        // 2. Intento 2: Con filtro de carpeta pero SIN restricción de mimeType
-        if ((!response.data.files || response.data.files.length === 0) && parentClause) {
-            qClause = `trashed=false and (${nameConditions})${parentClause}`;
-            console.log(`🔍 [DRIVE BUSCADOR 2] Query sin MimeType: "${qClause}"`);
-            response = await drive.files.list({
-                q: qClause,
-                fields: "files(id, name, webViewLink, webContentLink, createdTime, size, parents, mimeType)",
-                spaces: "drive",
-                pageSize: 20
-            });
-        }
-
-        // 3. Intento 3: Búsqueda amplia global por nombre/DNI (sin restricción de carpeta ni mimeType)
-        if (!response.data.files || response.data.files.length === 0) {
-            qClause = `trashed=false and (${nameConditions})`;
-            console.log(`🔍 [DRIVE BUSCADOR 3] Query Global Fallback: "${qClause}"`);
-            response = await drive.files.list({
-                q: qClause,
-                fields: "files(id, name, webViewLink, webContentLink, createdTime, size, parents, mimeType)",
-                spaces: "drive",
-                pageSize: 20
-            });
-        }
-
-        console.log(`✅ [DRIVE BUSCADOR] Archivos encontrados para "${queryStr}": ${response.data.files ? response.data.files.length : 0}`);
-
-        return (response.data.files || []).map(file => {
-            const parentId = (file.parents && file.parents.length > 0) ? file.parents[0] : null;
-            const folderInfo = parentId ? folderMap.get(parentId) : null;
-            let eventoNombre = folderInfo ? folderInfo.name : "Constancia DRE";
-
-            // Si el nombre de la carpeta es genérico, intentar extraer la etiqueta del nombre de archivo (ej. 12345678_FluidezLectora_UNNE_20260924.pdf)
-            if (eventoNombre === "Constancia DRE" || eventoNombre === "General") {
-                const parts = file.name.replace(/\.pdf$/i, "").split("_");
-                if (parts.length >= 2 && parts[1]) {
-                    const tagEtiqueta = parts[1].replace(/([a-z])([A-Z])/g, "$1 $2").trim();
-                    if (tagEtiqueta) {
-                        eventoNombre = tagEtiqueta;
-                    }
+async function rotarLogsGrandes(maxBytes = 10 * 1024 * 1024) {
+    for (const logPath of [STRUCTURED_LOG_PATH, CONNECTION_LOG_PATH]) {
+        if (!existsSync(logPath)) continue;
+        try {
+            const stat = await fsPromises.stat(logPath);
+            if (stat.size > maxBytes) {
+                const backupPath = `${logPath}.1`;
+                if (existsSync(backupPath)) {
+                    await fsPromises.unlink(backupPath);
                 }
+                await fsPromises.rename(logPath, backupPath);
+                console.log(`🔄 [LOG ROTATE] Archivo ${logPath} rotado a ${backupPath} (${(stat.size / (1024 * 1024)).toFixed(1)} MB)`);
             }
-
-            return {
-                id: file.id,
-                name: file.name,
-                dni: dniLimpio || rawStr,
-                evento: eventoNombre,
-                webViewLink: file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`,
-                webContentLink: file.webContentLink || `https://drive.google.com/uc?export=download&id=${file.id}`,
-                createdTime: file.createdTime,
-                size: file.size
-            };
-        });
-    } catch (e) {
-        console.error("❌ Error buscando certificados en Drive:", e.message);
-        return [];
+        } catch (err) {
+            console.error(`⚠️ Error rotando log ${logPath}:`, err.message);
+        }
     }
 }
 
@@ -1031,11 +884,12 @@ async function iniciarBot() {
             // Normalizar texto (remover tildes/acentos y espacios iniciales)
             const textoLimpio = texto.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
-            // Detectar #agenda, #agendas, #efemerides, #efemeride, #efemerida, #efemeridas (con o sin tildes/espacios/errores de tipeo)
+            // Detectar #agenda, #efemerides, #supervisores y #certificado/#constancia
             const esComandoAgenda = /^#\s*(agenda|agendas|efemerid)/i.test(textoLimpio);
             const esComandoSupervisores = /^#\s*superv/i.test(textoLimpio);
+            const esComandoCertificados = /^#\s*(certificad|constancia)/i.test(textoLimpio);
 
-            // Ignorar strictly todo mensaje de grupo, canal, difusión o estado (salvo comandos #agenda / #efemerides / #supervisores en grupo)
+            // Ignorar strictly todo mensaje de grupo, canal, difusión o estado (salvo comandos autorizados en grupo)
             const isGroup = !!participant || 
                             rawJid.includes("@g.us") || 
                             rawJid.endsWith("@broadcast") ||
@@ -1044,7 +898,7 @@ async function iniciarBot() {
 
             if (isGroup) {
                 const isGroupChat = rawJid.includes("@g.us") || rawJid === REPORTE_GROUP_JID;
-                if (isGroupChat && (esComandoAgenda || esComandoSupervisores)) {
+                if (isGroupChat && (esComandoAgenda || esComandoSupervisores || esComandoCertificados)) {
                     if (esComandoAgenda) {
                         console.log(`[COMANDO AGENDA EN GRUPO] Recibido "${texto.trim()}" en ${rawJid}`);
                         try {
@@ -1062,6 +916,15 @@ async function iniciarBot() {
                             console.log(`[SENT GROUP] ${new Date().toISOString()} -> ${rawJid}: ${respuestaSup.slice(0, 50).replace(/\n/g, ' ')}...`);
                         } catch (errSup) {
                             console.error("❌ Error al responder comando supervisores en grupo:", errSup);
+                        }
+                    } else if (esComandoCertificados) {
+                        console.log(`[COMANDO CERTIFICADOS EN GRUPO] Recibido "${texto.trim()}" en ${rawJid}`);
+                        try {
+                            const respuestaCert = await responderCertificadosWhatsApp(drive, CERTIFICADOS_FOLDER_ID, texto, DOMAIN_NAME);
+                            await sock.sendMessage(rawJid, { text: respuestaCert });
+                            console.log(`[SENT GROUP] ${new Date().toISOString()} -> ${rawJid}: ${respuestaCert.slice(0, 50).replace(/\n/g, ' ')}...`);
+                        } catch (errCert) {
+                            console.error("❌ Error al responder comando certificados en grupo:", errCert);
                         }
                     }
                 } else {
@@ -1102,12 +965,23 @@ async function iniciarBot() {
                 continue;
             }
 
-            const isDocMedia = messageContent.documentMessage && (
-                messageContent.documentMessage.mimetype?.startsWith("image/") ||
-                messageContent.documentMessage.mimetype?.startsWith("video/")
-            );
+            if (esComandoCertificados) {
+                console.log(`[COMANDO CERTIFICADOS PRIVADO] Recibido de ${numero.split('@')[0]} (Target JID: ${targetJid})`);
+                try {
+                    const respuestaCert = await responderCertificadosWhatsApp(drive, CERTIFICADOS_FOLDER_ID, texto, DOMAIN_NAME);
+                    await sock.sendMessage(targetJid, { text: respuestaCert });
+                    console.log(`[SENT PRIVATE] ${new Date().toISOString()} -> ${targetJid}: ${respuestaCert.slice(0, 50).replace(/\n/g, ' ')}...`);
+                } catch (errCert) {
+                    console.error("❌ Error respondiendo certificados en privado:", errCert);
+                }
+                continue;
+            }
+
             const isImage = !!messageContent.imageMessage || (messageContent.documentMessage?.mimetype?.startsWith("image/"));
-            let esArchivo = isImage || !!messageContent.videoMessage || isDocMedia;
+            const isVideo = !!messageContent.videoMessage || (messageContent.documentMessage?.mimetype?.startsWith("video/"));
+            const isAudio = !!messageContent.audioMessage || (messageContent.documentMessage?.mimetype?.startsWith("audio/"));
+            const isDocument = !!messageContent.documentMessage;
+            let esArchivo = isImage || isVideo || isAudio || isDocument;
 
             const tipoMsg = messageKeys.find(key => validKeys.includes(key)) || "desconocido";
 
@@ -1131,6 +1005,45 @@ async function descargarMediaConTimeout(msg, timeoutMs = DOWNLOAD_TIMEOUT_MS) {
     }
 }
 
+function resolverExtensionYMime(item) {
+    const mc = item.messageContent || {};
+    if (mc.documentMessage) {
+        const mime = mc.documentMessage.mimetype || "application/octet-stream";
+        const docName = mc.documentMessage.fileName || "";
+        const matchExt = docName.match(/\.[a-zA-Z0-9]+$/);
+        let ext = matchExt ? matchExt[0].toLowerCase() : "";
+        if (!ext) {
+            if (mime.includes("pdf")) ext = ".pdf";
+            else if (mime.includes("wordprocessingml") || mime.includes("msword")) ext = ".docx";
+            else if (mime.includes("spreadsheetml") || mime.includes("excel")) ext = ".xlsx";
+            else if (mime.includes("presentationml") || mime.includes("powerpoint")) ext = ".pptx";
+            else if (mime.startsWith("image/")) ext = ".jpg";
+            else if (mime.startsWith("video/")) ext = ".mp4";
+            else if (mime.startsWith("audio/")) ext = ".ogg";
+            else if (mime.includes("text/plain")) ext = ".txt";
+            else ext = ".bin";
+        }
+        return { ext, mime, prefix: "doc" };
+    }
+    if (mc.audioMessage) {
+        const mime = mc.audioMessage.mimetype || "audio/ogg; codecs=opus";
+        const ext = mime.includes("mp4") || mime.includes("mpeg") || mime.includes("mp3") ? ".mp3" : ".ogg";
+        return { ext, mime, prefix: "audio" };
+    }
+    if (mc.videoMessage) {
+        const mime = mc.videoMessage.mimetype || "video/mp4";
+        let ext = ".mp4";
+        if (mime.includes("quicktime")) ext = ".mov";
+        else if (mime.includes("3gpp")) ext = ".3gp";
+        return { ext, mime, prefix: "video" };
+    }
+    return {
+        ext: item.isImage ? ".jpg" : ".mp4",
+        mime: item.isImage ? "image/jpeg" : "video/mp4",
+        prefix: "archivo"
+    };
+}
+
 async function procesarColaDescargas(sesion, sock, numero) {
     if (sesion.isProcessingQueue) return;
     sesion.isProcessingQueue = true;
@@ -1142,20 +1055,8 @@ async function procesarColaDescargas(sesion, sock, numero) {
         
         try {
             const buffer = await descargarMediaConTimeout(item.msg, DOWNLOAD_TIMEOUT_MS);
-            let ext = item.isImage ? ".jpg" : ".mp4";
-            let mime = item.isImage ? "image/jpeg" : "video/mp4";
-            if (item.messageContent.documentMessage) {
-                mime = item.messageContent.documentMessage.mimetype || mime;
-                const docName = item.messageContent.documentMessage.fileName || "";
-                const matchExt = docName.match(/\.[a-zA-Z0-9]+$/);
-                if (matchExt) ext = matchExt[0];
-            } else if (item.messageContent.videoMessage) {
-                mime = item.messageContent.videoMessage.mimetype || "video/mp4";
-                if (mime.includes("quicktime")) ext = ".mov";
-                else if (mime.includes("3gpp")) ext = ".3gp";
-                else ext = ".mp4";
-            }
-            const fileName = `archivo_${Date.now()}_${Math.random().toString(36).substring(2, 8)}${ext}`;
+            const { ext, mime, prefix } = resolverExtensionYMime(item);
+            const fileName = `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}${ext}`;
             const filePath = `${TEMP_DIR}/${fileName}`;
             
             await fsPromises.writeFile(filePath, buffer);
@@ -1227,6 +1128,32 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
                 }
                 
                 if (subidosConExito > 0) {
+                    // Si el usuario envió textos o epígrafes durante la sesión, subirlos como info_envio.txt
+                    if (Array.isArray(sesion.textosEnviados) && sesion.textosEnviados.length > 0) {
+                        try {
+                            const fechaStr = now.toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+                            const contenidoInfo = [
+                                "==================================================",
+                                "INFORMACIÓN Y EPÍGRAFES DEL ENVÍO - PRENSI BOT",
+                                "==================================================",
+                                `Remitente (WhatsApp): +${numLimpio} (https://wa.me/${numLimpio})`,
+                                `Fecha de procesamiento: ${fechaStr}`,
+                                `Archivos subidos en la sesión: ${subidosConExito}`,
+                                "--------------------------------------------------",
+                                "MENSAJES / DESCRIPCIÓN ENVIADA POR EL USUARIO:",
+                                "",
+                                ...sesion.textosEnviados.map((t, i) => `[${t.hora}] Mensaje ${i + 1}:\n${t.texto}\n`),
+                                "=================================================="
+                            ].join("\n");
+                            const infoBuffer = Buffer.from(contenidoInfo, "utf8");
+                            const nombreInfo = sesion.esRecap ? `info_envio_${numLimpio}_${Date.now()}.txt` : `info_envio_${Date.now()}.txt`;
+                            await subirArchivoStream(infoBuffer, nombreInfo, "text/plain; charset=utf-8", carpeta.id);
+                            logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Archivo de epígrafe ${nombreInfo} subido con éxito (${sesion.textosEnviados.length} mensaje(s)).`, { evento: "drive_info_txt_ok", numero, sessionId: sesion.sessionId });
+                        } catch (txtErr) {
+                            logMessage("warn", `⚠️ [DRIVE SESION ${sesion.sessionId}] No se pudo subir info_envio.txt: ${txtErr.message}`, { evento: "drive_info_txt_error", numero, sessionId: sesion.sessionId });
+                        }
+                    }
+
                     enviosNuevos++;
                     await guardarContador();
                     logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Subida completada con éxito para ${numero.split('@')[0]}. Enviando mensaje de agradecimiento.`, { evento: "drive_exito", numero, sessionId: sesion.sessionId });
@@ -1276,6 +1203,7 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
                     sesiones.set(numero, { 
                         sessionId,
                         archivosLocales: [],
+                        textosEnviados: [],
                         timeoutId: null,
                         esRecap: false,
                         activeDownloads: 0,
@@ -1292,6 +1220,12 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
                     sesion.esRecap = true;
                 }
 
+                const textoSinRecap = texto.replace(/#recap/gi, "").trim();
+                if (textoSinRecap.length > 0) {
+                    const horaMsg = new Date().toLocaleTimeString("es-AR", { timeZone: "America/Argentina/Buenos_Aires", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+                    sesion.textosEnviados.push({ hora: horaMsg, texto: textoSinRecap });
+                }
+
                 if (sesion.timeoutId) {
                     logMessage("info", `[SESION ${sesion.sessionId}] Cancelando timeout anterior para ${numero.split('@')[0]}`, { evento: "timeout_cancelar", numero, sessionId: sesion.sessionId });
                     clearTimeout(sesion.timeoutId);
@@ -1302,6 +1236,7 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
                 if (esArchivo) {
                     if (messageContent.imageMessage) sizeInBytes = Number(messageContent.imageMessage.fileLength || 0);
                     else if (messageContent.videoMessage) sizeInBytes = Number(messageContent.videoMessage.fileLength || 0);
+                    else if (messageContent.audioMessage) sizeInBytes = Number(messageContent.audioMessage.fileLength || 0);
                     else if (messageContent.documentMessage) sizeInBytes = Number(messageContent.documentMessage.fileLength || 0);
 
                     const maxSizeBytes = MAX_FILE_SIZE_MB * 1024 * 1024;
@@ -1339,7 +1274,7 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
     });
 }
 
-// Cron nocturno de baja actividad (03:00 AM ART): Pre-carga y refresco silencioso de Agenda, Efemérides y Supervisores + Limpieza de archivos temporales huérfanos
+// Cron nocturno de baja actividad (03:00 AM ART): Pre-carga y refresco silencioso de Agenda, Efemérides y Supervisores + Limpieza de archivos temporales huérfanos y rotación de logs
 cron.schedule('0 3 * * *', async () => {
     console.log("🌙 [CRON NOCTURNO 03:00 AM] Refrescando datos de Agenda, Efemérides y Supervisores...");
     try {
@@ -1354,6 +1289,8 @@ cron.schedule('0 3 * * *', async () => {
 
     try {
         await limpiarArchivosHuerfanos(24 * 60 * 60 * 1000);
+        limpiarMapaBienvenida(24 * 60 * 60 * 1000);
+        await rotarLogsGrandes(10 * 1024 * 1024);
     } catch (cleanErr) {
         console.error("❌ [CRON NOCTURNO 03:00 AM] Error durante limpieza de archivos temporales:", cleanErr.message);
     }
@@ -1490,6 +1427,30 @@ function generarHTMLConMetaTags(rawHtml, routeData, requestHost, fullUrl) {
     return html.replace('</head>', `${ogTags}\n</head>`);
 }
 
+let cacheIndexHtml = { content: null, mtimeMs: 0 };
+
+async function obtenerIndexHtmlCacheado() {
+    const htmlPath = "./public/index.html";
+    if (!existsSync(htmlPath)) return null;
+    const stat = await fsPromises.stat(htmlPath);
+    if (!cacheIndexHtml.content || stat.mtimeMs !== cacheIndexHtml.mtimeMs) {
+        const rawContent = await fsPromises.readFile(htmlPath, "utf8");
+        cacheIndexHtml = { content: rawContent, mtimeMs: stat.mtimeMs };
+    }
+    return cacheIndexHtml.content;
+}
+
+function esPeticionInternaAutorizada(req) {
+    const authHeader = String(req.headers.authorization || "").trim();
+    if (INTERNAL_API_TOKEN && authHeader === `Bearer ${INTERNAL_API_TOKEN}`) {
+        return true;
+    }
+    const remoteIp = String(req.socket?.remoteAddress || "");
+    const esLoopback = remoteIp === "127.0.0.1" || remoteIp === "::1" || remoteIp === "::ffff:127.0.0.1";
+    const tieneProxyHeader = Boolean(req.headers["x-forwarded-for"] || req.headers["x-real-ip"]);
+    return esLoopback && !tieneProxyHeader;
+}
+
 function iniciarHttpServer() {
     const server = http.createServer(async (req, res) => {
         const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -1508,10 +1469,9 @@ function iniciarHttpServer() {
         if ((req.method === "GET" || req.method === "HEAD") && (CANONICAL_ROUTES[pathname] || pathname === "/index.html")) {
             const routeData = CANONICAL_ROUTES[pathname] || CANONICAL_ROUTES["/"];
             try {
-                const htmlPath = "./public/index.html";
-                if (existsSync(htmlPath)) {
-                    const rawContent = await fsPromises.readFile(htmlPath, "utf8");
-                    const fullUrl = `https://${req.headers.host || 'prensi.macrointell.com.ar'}${pathname === '/index.html' ? '/' : pathname}${search}`;
+                const rawContent = await obtenerIndexHtmlCacheado();
+                if (rawContent) {
+                    const fullUrl = `https://${req.headers.host || DOMAIN_NAME}${pathname === '/index.html' ? '/' : pathname}${search}`;
                     const finalHtml = generarHTMLConMetaTags(rawContent, routeData, req.headers.host, fullUrl);
                     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
                     if (req.method === "HEAD") {
@@ -1585,12 +1545,25 @@ function iniciarHttpServer() {
             }
         }
 
-        if (req.method === "POST" && req.url === "/send-message") {
+        if (req.method === "POST" && pathname === "/send-message") {
+            if (!esPeticionInternaAutorizada(req)) {
+                res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+                res.end(JSON.stringify({ status: "error", message: "Forbidden" }));
+                return;
+            }
+
             let body = "";
+            let bodyTooLarge = false;
             req.on("data", chunk => {
+                if (body.length + chunk.length > 16384) {
+                    bodyTooLarge = true;
+                    req.destroy();
+                    return;
+                }
                 body += chunk.toString();
             });
             req.on("end", async () => {
+                if (bodyTooLarge) return;
                 try {
                     const data = JSON.parse(body);
                     const message = data.message;
