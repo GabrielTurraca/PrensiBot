@@ -7,12 +7,20 @@
 //  - Formateador de respuesta para comandos de WhatsApp (#certificado / #constancia).
 
 const CACHE_REFRESH_MS = 10 * 60 * 1000; // 10 minutos
+const NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos para consultas no encontradas
+const MAX_DRIVE_FALLBACKS_PER_MIN = 12; // Protección de cuota de Google Drive API
 const CAMPOS_DRIVE = 'files(id, name, webViewLink, webContentLink, createdTime, size, parents, mimeType)';
 
 let indiceCertificados = new Map(); // dni -> [certificadoEnriquecido]
 let mapaCarpetas = new Map();       // folderId -> folderName
 let todasLasCarpetasIds = [];       // [rootIds + subfolderIds]
 let indiceListo = false;
+let cacheNegativa = new Map();      // queryKey -> timestamp
+let fallbackTimestamps = [];        // timestamps de llamadas fallback a Drive en el último minuto
+
+function escaparQueryDrive(str = '') {
+  return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").trim();
+}
 
 function obtenerCarpetasConfiguradas(carpetaConstanciasId) {
   return Array.isArray(carpetaConstanciasId)
@@ -144,6 +152,7 @@ export async function reconstruirIndice(driveClient, carpetaConstanciasId) {
     todasLasCarpetasIds = folderIds;
     indiceCertificados = nuevoIndice;
     indiceListo = true;
+    cacheNegativa.clear();
     console.log(`[certificados] Índice actualizado: ${archivos.length} archivos en ${folderIds.length} carpeta(s)/subcarpeta(s), ${nuevoIndice.size} DNIs indexados`);
   } catch (err) {
     console.error('[certificados] Error al reconstruir índice:', err.message);
@@ -166,7 +175,8 @@ export async function buscarCertificados(driveClient, carpetaConstanciasId, dniO
   }
 
   const dniLimpio = rawStr.replace(/\D/g, '').trim();
-  const termSanitized = rawStr.replace(/['"\\]/g, '').trim();
+  const termSanitized = escaparQueryDrive(rawStr.replace(/["]/g, ''));
+  const cacheKey = (dniLimpio || termSanitized).toLowerCase();
 
   // 1) Camino rápido: índice en memoria (<50ms)
   if (indiceListo) {
@@ -176,6 +186,11 @@ export async function buscarCertificados(driveClient, carpetaConstanciasId, dniO
     if (indiceCertificados.has(termSanitized)) {
       return { status: 'success', results: indiceCertificados.get(termSanitized) };
     }
+    // Verificar caché negativa para evitar golpear Drive repetidamente por un mismo DNI inexistente
+    const negTs = cacheNegativa.get(cacheKey);
+    if (negTs && (Date.now() - negTs < NEGATIVE_CACHE_TTL_MS)) {
+      return { status: 'not_found', results: [] };
+    }
   }
 
   if (!driveClient) {
@@ -183,52 +198,65 @@ export async function buscarCertificados(driveClient, carpetaConstanciasId, dniO
   }
 
   const terminos = [];
-  if (dniLimpio && dniLimpio.length >= 4) terminos.push(dniLimpio);
+  if (dniLimpio && dniLimpio.length >= 4) terminos.push(escaparQueryDrive(dniLimpio));
   if (termSanitized && termSanitized !== dniLimpio && termSanitized.length >= 3) terminos.push(termSanitized);
   if (terminos.length === 0) {
     return { status: 'not_found', results: [] };
   }
 
-  // 2) Fallback a Drive en paralelo sobre carpetas conocidas
+  // Control de cuota de fallback a Drive cuando el índice en memoria ya está activo
+  const ahora = Date.now();
+  fallbackTimestamps = fallbackTimestamps.filter(ts => ahora - ts < 60000);
+  if (indiceListo && fallbackTimestamps.length >= MAX_DRIVE_FALLBACKS_PER_MIN) {
+    console.warn(`[certificados] Límite de fallbacks a Drive alcanzado (${MAX_DRIVE_FALLBACKS_PER_MIN}/min). Respondiendo desde índice en memoria.`);
+    return { status: 'not_found', results: [] };
+  }
+  fallbackTimestamps.push(ahora);
+
+  // 2) Fallback a Drive sobre carpetas conocidas primero
   const carpetas = todasLasCarpetasIds.length > 0
     ? todasLasCarpetasIds
     : obtenerCarpetasConfiguradas(carpetaConstanciasId);
 
   const nameClause = terminos.map(t => `name contains '${t}'`).join(' or ');
 
-  const intentos = [];
-  if (carpetas.length > 0) {
-    const parentClause = carpetas.map(id => `'${id}' in parents`).join(' or ');
-    intentos.push(
-      driveClient.files.list({
-        q: `(${parentClause}) and (${nameClause}) and mimeType = 'application/pdf' and trashed = false`,
-        fields: CAMPOS_DRIVE,
-        pageSize: 20
-      }),
-      driveClient.files.list({
+  try {
+    if (carpetas.length > 0) {
+      const parentClause = carpetas.map(id => `'${escaparQueryDrive(id)}' in parents`).join(' or ');
+      const resCarpetas = await driveClient.files.list({
         q: `(${parentClause}) and (${nameClause}) and mimeType != 'application/vnd.google-apps.folder' and trashed = false`,
         fields: CAMPOS_DRIVE,
         pageSize: 20
-      })
-    );
-  }
+      });
+      if (resCarpetas?.data?.files && resCarpetas.data.files.length > 0) {
+        const enriquecidos = resCarpetas.data.files.map(f => enriquecerArchivo(f, mapaCarpetas, dniLimpio || termSanitized));
+        if (dniLimpio) indiceCertificados.set(dniLimpio, enriquecidos);
+        return { status: 'success', results: enriquecidos };
+      }
+    }
 
-  // Fallback global (toda la cuenta) como último recurso
-  intentos.push(
-    driveClient.files.list({
+    // 3) Fallback global (toda la cuenta) solo si no apareció en las carpetas configuradas
+    const resGlobal = await driveClient.files.list({
       q: `(${nameClause}) and mimeType = 'application/pdf' and trashed = false`,
       fields: CAMPOS_DRIVE,
       pageSize: 20
-    })
-  );
-
-  const resultados = await Promise.allSettled(intentos);
-  for (const r of resultados) {
-    if (r.status === 'fulfilled' && r.value?.data?.files && r.value.data.files.length > 0) {
-      const enriquecidos = r.value.data.files.map(f => enriquecerArchivo(f, mapaCarpetas, dniLimpio || termSanitized));
+    });
+    if (resGlobal?.data?.files && resGlobal.data.files.length > 0) {
+      const enriquecidos = resGlobal.data.files.map(f => enriquecerArchivo(f, mapaCarpetas, dniLimpio || termSanitized));
+      if (dniLimpio) indiceCertificados.set(dniLimpio, enriquecidos);
       return { status: 'success', results: enriquecidos };
     }
+  } catch (err) {
+    console.warn('[certificados] Error en fallback a Google Drive:', err.message);
   }
+
+  // Registrar en caché negativa (con limpieza si supera 1000 entradas)
+  if (cacheNegativa.size > 1000) {
+    for (const [k, ts] of cacheNegativa.entries()) {
+      if (ahora - ts >= NEGATIVE_CACHE_TTL_MS) cacheNegativa.delete(k);
+    }
+  }
+  cacheNegativa.set(cacheKey, ahora);
 
   return { status: 'not_found', results: [] };
 }

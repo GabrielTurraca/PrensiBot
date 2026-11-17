@@ -156,15 +156,85 @@ await cargarContador();
 let sockGlobal = null;
 const sesiones = new Map();
 const TEMP_DIR = "./temp";
+const SESIONES_ACTIVAS_PATH = `${TEMP_DIR}/sesiones_activas.json`;
+
+async function guardarSesionesActivas() {
+    try {
+        if (!existsSync(TEMP_DIR)) {
+            await fsPromises.mkdir(TEMP_DIR, { recursive: true });
+        }
+        const lista = [];
+        for (const [numero, sesion] of sesiones.entries()) {
+            if ((sesion.archivosLocales && sesion.archivosLocales.length > 0) || (sesion.textosEnviados && sesion.textosEnviados.length > 0)) {
+                lista.push({
+                    numero,
+                    sessionId: sesion.sessionId,
+                    archivosLocales: sesion.archivosLocales || [],
+                    textosEnviados: sesion.textosEnviados || [],
+                    esRecap: Boolean(sesion.esRecap),
+                    bytesDescargados: sesion.bytesDescargados || 0,
+                    updatedAt: Date.now()
+                });
+            }
+        }
+        await fsPromises.writeFile(SESIONES_ACTIVAS_PATH, JSON.stringify(lista, null, 2), "utf8");
+    } catch (e) {
+        console.error("❌ Error al guardar sesiones_activas.json:", e.message);
+    }
+}
+
+async function rehidratarSesionesActivas() {
+    if (!existsSync(SESIONES_ACTIVAS_PATH)) return 0;
+    try {
+        const raw = await fsPromises.readFile(SESIONES_ACTIVAS_PATH, "utf8");
+        const lista = JSON.parse(raw);
+        if (!Array.isArray(lista) || lista.length === 0) return 0;
+
+        let recuperadas = 0;
+        for (const item of lista) {
+            if (!item || !item.numero || sesiones.has(item.numero)) continue;
+            const archivosValidos = (item.archivosLocales || []).filter(a => a && a.path && existsSync(a.path));
+            if (archivosValidos.length === 0) continue;
+
+            sesiones.set(item.numero, {
+                sessionId: item.sessionId || generarSessionId(item.numero),
+                archivosLocales: archivosValidos,
+                textosEnviados: Array.isArray(item.textosEnviados) ? item.textosEnviados : [],
+                timeoutId: null,
+                esRecap: Boolean(item.esRecap),
+                activeDownloads: 0,
+                downloadQueue: [],
+                isProcessingQueue: false,
+                bytesDescargados: item.bytesDescargados || 0,
+                rehidratada: true
+            });
+            recuperadas++;
+            logMessage("info", `♻️ [SESION ${item.sessionId}] Sesión recuperada de disco para ${item.numero.split('@')[0]} (${archivosValidos.length} archivo(s) pendientes)`, { evento: "sesion_rehidratada", numero: item.numero, sessionId: item.sessionId });
+        }
+        await guardarSesionesActivas();
+        return recuperadas;
+    } catch (e) {
+        console.error("❌ Error al rehidratar sesiones_activas.json:", e.message);
+        return 0;
+    }
+}
 
 async function limpiarArchivosHuerfanos(maxEdadMs = 24 * 60 * 60 * 1000) {
     if (!existsSync(TEMP_DIR)) return;
     try {
+        const archivosEnSesion = new Set(["sesiones_activas.json"]);
+        for (const sesion of sesiones.values()) {
+            for (const a of (sesion.archivosLocales || [])) {
+                if (a.name) archivosEnSesion.add(a.name);
+            }
+        }
+
         const archivos = await fsPromises.readdir(TEMP_DIR);
         const ahora = Date.now();
         let borrados = 0;
 
         for (const archivo of archivos) {
+            if (archivosEnSesion.has(archivo)) continue;
             const pathArchivo = `${TEMP_DIR}/${archivo}`;
             try {
                 const stat = await fsPromises.stat(pathArchivo);
@@ -213,8 +283,10 @@ async function initGoogleDrive() {
 }
 
 async function buscarCarpeta(nombreCarpeta) {
+    const nombreSafe = String(nombreCarpeta || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const parentSafe = String(PARENT_FOLDER_ID || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     const response = await drive.files.list({
-        q: `mimeType='application/vnd.google-apps.folder' and name='${nombreCarpeta}' and '${PARENT_FOLDER_ID}' in parents and trashed=false`,
+        q: `mimeType='application/vnd.google-apps.folder' and name='${nombreSafe}' and '${parentSafe}' in parents and trashed=false`,
         fields: "files(id, webViewLink)",
         spaces: "drive"
     });
@@ -237,6 +309,18 @@ function limpiarMapaBienvenida(maxEdadMs = 24 * 60 * 60 * 1000) {
     for (const [jid, time] of bienvenidaEnviada.entries()) {
         if (ahora - time > maxEdadMs) {
             bienvenidaEnviada.delete(jid);
+        }
+    }
+    for (const [id, time] of processedMessageIds.entries()) {
+        if (ahora - time > 3600000) {
+            processedMessageIds.delete(id);
+        }
+    }
+    if (typeof apiRateLimitMap !== "undefined") {
+        for (const [ip, entry] of apiRateLimitMap.entries()) {
+            if (ahora >= entry.resetAt) {
+                apiRateLimitMap.delete(ip);
+            }
         }
     }
 }
@@ -705,6 +789,228 @@ let reconnectionTimestamps = [];
 let cachedBaileysVersion = null;
 let limpiezaInicialEjecutada = false;
 
+async function descargarMediaConTimeout(msg, timeoutMs = DOWNLOAD_TIMEOUT_MS) {
+    const downloadPromise = downloadMediaMessage(msg, "buffer", {});
+    let timer;
+    const timeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+            reject(new Error(`Timeout de descarga excedido (${timeoutMs / 1000}s)`));
+        }, timeoutMs);
+        if (timer.unref) timer.unref();
+    });
+    try {
+        const result = await Promise.race([downloadPromise, timeoutPromise]);
+        return result;
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
+function resolverExtensionYMime(item) {
+    const mc = item.messageContent || {};
+    if (mc.documentMessage) {
+        const mime = mc.documentMessage.mimetype || "application/octet-stream";
+        const docName = mc.documentMessage.fileName || "";
+        const matchExt = docName.match(/\.[a-zA-Z0-9]+$/);
+        let ext = matchExt ? matchExt[0].toLowerCase() : "";
+        if (!ext) {
+            if (mime.includes("pdf")) ext = ".pdf";
+            else if (mime.includes("wordprocessingml") || mime.includes("msword")) ext = ".docx";
+            else if (mime.includes("spreadsheetml") || mime.includes("excel")) ext = ".xlsx";
+            else if (mime.includes("presentationml") || mime.includes("powerpoint")) ext = ".pptx";
+            else if (mime.startsWith("image/")) ext = ".jpg";
+            else if (mime.startsWith("video/")) ext = ".mp4";
+            else if (mime.startsWith("audio/")) ext = ".ogg";
+            else if (mime.includes("text/plain")) ext = ".txt";
+            else ext = ".bin";
+        }
+        return { ext, mime, prefix: "doc" };
+    }
+    if (mc.audioMessage) {
+        const mime = mc.audioMessage.mimetype || "audio/ogg; codecs=opus";
+        const ext = mime.includes("mp4") || mime.includes("mpeg") || mime.includes("mp3") ? ".mp3" : ".ogg";
+        return { ext, mime, prefix: "audio" };
+    }
+    if (mc.videoMessage) {
+        const mime = mc.videoMessage.mimetype || "video/mp4";
+        let ext = ".mp4";
+        if (mime.includes("quicktime")) ext = ".mov";
+        else if (mime.includes("3gpp")) ext = ".3gp";
+        return { ext, mime, prefix: "video" };
+    }
+    return {
+        ext: item.isImage ? ".jpg" : ".mp4",
+        mime: item.isImage ? "image/jpeg" : "video/mp4",
+        prefix: "archivo"
+    };
+}
+
+async function procesarColaDescargas(sesion, sock, numero) {
+    if (sesion.isProcessingQueue) return;
+    sesion.isProcessingQueue = true;
+
+    while (sesion.downloadQueue.length > 0) {
+        const item = sesion.downloadQueue.shift();
+        sesion.activeDownloads++;
+        logMessage("info", `[DESCARGA SESION ${sesion.sessionId}] Procesando descarga FIFO para ${numero.split('@')[0]} (Pendientes en cola: ${sesion.downloadQueue.length})`, { evento: "descarga_inicio", numero, sessionId: sesion.sessionId });
+        
+        try {
+            const buffer = await descargarMediaConTimeout(item.msg, DOWNLOAD_TIMEOUT_MS);
+            const { ext, mime, prefix } = resolverExtensionYMime(item);
+            const fileName = `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}${ext}`;
+            const filePath = `${TEMP_DIR}/${fileName}`;
+            
+            await fsPromises.writeFile(filePath, buffer);
+            sesion.bytesDescargados = (sesion.bytesDescargados || 0) + buffer.length;
+            
+            sesion.archivosLocales.push({
+                path: filePath,
+                name: fileName,
+                mimeType: mime
+            });
+            await guardarSesionesActivas();
+            logMessage("info", `[DESCARGA SESION ${sesion.sessionId}] Guardado archivo local: ${fileName} (${(buffer.length / (1024 * 1024)).toFixed(2)} MB). Total acumulado: ${(sesion.bytesDescargados / (1024 * 1024)).toFixed(1)} MB`, { evento: "descarga_exito", numero, sessionId: sesion.sessionId });
+        } catch (downloadErr) {
+            logMessage("error", `❌ [DESCARGA ERROR SESION ${sesion.sessionId}] Falló la descarga para ${numero.split('@')[0]}: ${downloadErr.message}`, { evento: "descarga_error", numero, sessionId: sesion.sessionId });
+        } finally {
+            sesion.activeDownloads--;
+            logMessage("info", `[DESCARGA SESION ${sesion.sessionId}] Descarga finalizada para ${numero.split('@')[0]} (Activas: ${sesion.activeDownloads})`, { evento: "descarga_fin", numero, sessionId: sesion.sessionId });
+        }
+    }
+
+    sesion.isProcessingQueue = false;
+
+    if (sesion.activeDownloads === 0 && sesion.downloadQueue.length === 0) {
+        evaluarTimeoutSubidaDrive(sesion, sock, numero);
+    }
+}
+
+function evaluarTimeoutSubidaDrive(sesion, sock, numero, delayMs = 180000) {
+    if (sesion.archivosLocales.length > 0) {
+        if (sesion.timeoutId) {
+            clearTimeout(sesion.timeoutId);
+            sesion.timeoutId = null;
+        }
+        const segs = Math.round(delayMs / 1000);
+        logMessage("info", `[SESION ${sesion.sessionId}] Programando subida a Drive en ${segs}s para ${numero.split('@')[0]} (${sesion.archivosLocales.length} archivos en espera)`, { evento: "sesion_timer", numero, sessionId: sesion.sessionId });
+        sesion.timeoutId = setTimeout(async () => {
+            const sockActiva = sockGlobal || sock;
+            try {
+                logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Iniciando proceso de subida para ${numero.split('@')[0]}`, { evento: "drive_inicio", numero, sessionId: sesion.sessionId });
+                sesiones.delete(numero);
+                await guardarSesionesActivas();
+
+                const now = new Date();
+                const year = now.getFullYear();
+                const month = String(now.getMonth() + 1).padStart(2, '0');
+                const day = String(now.getDate()).padStart(2, '0');
+                const numLimpio = numero.split('@')[0];
+                let carpetaName = `${year}${month}${day}_${numLimpio}`;
+                
+                if (sesion.esRecap) {
+                    carpetaName = `${year}${month}${day}_Recap`;
+                }
+                
+                let carpeta = await buscarCarpeta(carpetaName);
+                if (!carpeta) {
+                    logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Creando carpeta: ${carpetaName}`, { evento: "drive_crear_carpeta", numero, sessionId: sesion.sessionId });
+                    carpeta = await crearCarpeta(carpetaName);
+                }
+                
+                let subidosConExito = 0;
+                for (const archivo of sesion.archivosLocales) {
+                    if (existsSync(archivo.path)) {
+                        logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Subiendo archivo a Drive (Streaming con reintentos): ${archivo.name}`, { evento: "drive_subida_archivo", numero, sessionId: sesion.sessionId });
+                        try {
+                            await subirArchivoConReintentos(archivo.path, archivo.name, archivo.mimeType, carpeta.id);
+                            await fsPromises.unlink(archivo.path);
+                            logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Archivo subido y eliminado localmente: ${archivo.name}`, { evento: "drive_archivo_ok", numero, sessionId: sesion.sessionId });
+                            subidosConExito++;
+                        } catch (uploadErr) {
+                            logMessage("error", `❌ [DRIVE SESION ${sesion.sessionId}] Falló definitivamente la subida de ${archivo.name}. Se conserva en ./temp/: ${uploadErr.message}`, { evento: "drive_archivo_error", numero, sessionId: sesion.sessionId });
+                        }
+                    }
+                }
+                
+                if (subidosConExito > 0) {
+                    // Si el usuario envió textos o epígrafes durante la sesión, subirlos como info_envio.txt
+                    if (Array.isArray(sesion.textosEnviados) && sesion.textosEnviados.length > 0) {
+                        try {
+                            const fechaStr = now.toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+                            const contenidoInfo = [
+                                "==================================================",
+                                "INFORMACIÓN Y EPÍGRAFES DEL ENVÍO - PRENSI BOT",
+                                "==================================================",
+                                `Remitente (WhatsApp): +${numLimpio} (https://wa.me/${numLimpio})`,
+                                `Fecha de procesamiento: ${fechaStr}`,
+                                `Archivos subidos en la sesión: ${subidosConExito}`,
+                                "--------------------------------------------------",
+                                "MENSAJES / DESCRIPCIÓN ENVIADA POR EL USUARIO:",
+                                "",
+                                ...sesion.textosEnviados.map((t, i) => `[${t.hora}] Mensaje ${i + 1}:\n${t.texto}\n`),
+                                "=================================================="
+                            ].join("\n");
+                            const infoBuffer = Buffer.from(contenidoInfo, "utf8");
+                            const nombreInfo = sesion.esRecap ? `info_envio_${numLimpio}_${Date.now()}.txt` : `info_envio_${Date.now()}.txt`;
+                            await subirArchivoStream(infoBuffer, nombreInfo, "text/plain; charset=utf-8", carpeta.id);
+                            logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Archivo de epígrafe ${nombreInfo} subido con éxito (${sesion.textosEnviados.length} mensaje(s)).`, { evento: "drive_info_txt_ok", numero, sessionId: sesion.sessionId });
+                        } catch (txtErr) {
+                            logMessage("warn", `⚠️ [DRIVE SESION ${sesion.sessionId}] No se pudo subir info_envio.txt: ${txtErr.message}`, { evento: "drive_info_txt_error", numero, sessionId: sesion.sessionId });
+                        }
+                    }
+
+                    enviosNuevos++;
+                    await guardarContador();
+                    logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Subida completada con éxito para ${numero.split('@')[0]}. Enviando mensaje de agradecimiento.`, { evento: "drive_exito", numero, sessionId: sesion.sessionId });
+                    if (sockActiva) {
+                        await sockActiva.sendMessage(numero, { text: "Gracias por compartirlo con el equipo de Prensa." });
+                    }
+                } else {
+                    logMessage("error", `❌ [DRIVE SESION ${sesion.sessionId}] No se pudo subir ningún archivo enviado por wa.me/${numero.split('@')[0]}. Los archivos se conservan en ./temp/.`, { evento: "drive_fallo_total", numero, sessionId: sesion.sessionId });
+                    try {
+                        if (sockActiva) {
+                            await sockActiva.sendMessage(ADMIN_NUMBER_JID, { text: `⚠️ *Error de Subida a Drive*\nFalló la subida de todos los archivos enviados por: wa.me/${numero.split('@')[0]}\nLos archivos se conservan en ./temp/ del servidor para revisión manual.` });
+                        }
+                    } catch (notifyErr) {
+                        console.error("Error al notificar al admin:", notifyErr);
+                    }
+                }
+            } catch (err) {
+                logMessage("error", `[DRIVE SESION ${sesion.sessionId}] Error inesperado durante el ciclo de subida a drive: ${err.message}`, { evento: "drive_error_inesperado", numero, sessionId: sesion.sessionId });
+                try {
+                    if (sockActiva) {
+                        await sockActiva.sendMessage(ADMIN_NUMBER_JID, { text: `⚠️ *Error Inesperado en Subida a Drive*\nOcurrió un fallo en el ciclo de subida para: wa.me/${numero.split('@')[0]}` });
+                    }
+                } catch (notifyErr) {
+                    console.error("Error al notificar al admin:", notifyErr);
+                }
+            }
+        }, delayMs);
+    } else {
+        const sockActiva = sockGlobal || sock;
+        const esComandoRecap = sesion.esRecap;
+        if (!esComandoRecap) {
+            const ahora = Date.now();
+            const ultimaBienvenida = bienvenidaEnviada.get(numero) || 0;
+            const COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+            if (ahora - ultimaBienvenida > COOLDOWN_MS) {
+                logMessage("info", `[BIENVENIDA SESION ${sesion.sessionId}] Enviando mensaje de bienvenida a ${numero.split('@')[0]}`, { evento: "bienvenida_enviada", numero, sessionId: sesion.sessionId });
+                bienvenidaEnviada.set(numero, ahora);
+                if (sockActiva) {
+                    sockActiva.sendMessage(numero, { text: WELCOME_MESSAGE }).catch(e => console.error("Error enviando bienvenida:", e));
+                }
+            } else {
+                logMessage("info", `[BIENVENIDA SESION ${sesion.sessionId}] Omitiendo bienvenida para ${numero.split('@')[0]} por cooldown`, { evento: "bienvenida_cooldown", numero, sessionId: sesion.sessionId });
+            }
+        } else {
+            logMessage("info", `[COMANDO SESION ${sesion.sessionId}] Recibido #recap de ${numero.split('@')[0]}`, { evento: "comando_recap", numero, sessionId: sesion.sessionId });
+        }
+        sesiones.delete(numero);
+        guardarSesionesActivas().catch(() => {});
+    }
+}
+
 async function iniciarBot() {
     console.log("🚀 Iniciando bot...");
     if (!drive) {
@@ -717,6 +1023,7 @@ async function iniciarBot() {
     
     if (!limpiezaInicialEjecutada) {
         limpiezaInicialEjecutada = true;
+        await rehidratarSesionesActivas();
         await limpiarArchivosHuerfanos(24 * 60 * 60 * 1000);
     }
     
@@ -825,6 +1132,14 @@ async function iniciarBot() {
             }
 
             disconnectTimestamp = 0;
+
+            // Si existen sesiones rehidratadas desde disco al arrancar, programar su subida a Drive en 15s
+            for (const [num, sesion] of sesiones.entries()) {
+                if (sesion.rehidratada && !sesion.timeoutId && sesion.archivosLocales.length > 0) {
+                    sesion.rehidratada = false;
+                    evaluarTimeoutSubidaDrive(sesion, sock, num, 15000);
+                }
+            }
         }
     });
     
@@ -987,215 +1302,6 @@ async function iniciarBot() {
 
             console.log(`[MENSAJE] Recibido de ${numero.split('@')[0]} - Tipo: ${tipoMsg} - Texto: "${texto}" - Es archivo: ${!!esArchivo}`);
 
-            
-async function descargarMediaConTimeout(msg, timeoutMs = DOWNLOAD_TIMEOUT_MS) {
-    const downloadPromise = downloadMediaMessage(msg, "buffer", {});
-    let timer;
-    const timeoutPromise = new Promise((_, reject) => {
-        timer = setTimeout(() => {
-            reject(new Error(`Timeout de descarga excedido (${timeoutMs / 1000}s)`));
-        }, timeoutMs);
-        if (timer.unref) timer.unref();
-    });
-    try {
-        const result = await Promise.race([downloadPromise, timeoutPromise]);
-        return result;
-    } finally {
-        if (timer) clearTimeout(timer);
-    }
-}
-
-function resolverExtensionYMime(item) {
-    const mc = item.messageContent || {};
-    if (mc.documentMessage) {
-        const mime = mc.documentMessage.mimetype || "application/octet-stream";
-        const docName = mc.documentMessage.fileName || "";
-        const matchExt = docName.match(/\.[a-zA-Z0-9]+$/);
-        let ext = matchExt ? matchExt[0].toLowerCase() : "";
-        if (!ext) {
-            if (mime.includes("pdf")) ext = ".pdf";
-            else if (mime.includes("wordprocessingml") || mime.includes("msword")) ext = ".docx";
-            else if (mime.includes("spreadsheetml") || mime.includes("excel")) ext = ".xlsx";
-            else if (mime.includes("presentationml") || mime.includes("powerpoint")) ext = ".pptx";
-            else if (mime.startsWith("image/")) ext = ".jpg";
-            else if (mime.startsWith("video/")) ext = ".mp4";
-            else if (mime.startsWith("audio/")) ext = ".ogg";
-            else if (mime.includes("text/plain")) ext = ".txt";
-            else ext = ".bin";
-        }
-        return { ext, mime, prefix: "doc" };
-    }
-    if (mc.audioMessage) {
-        const mime = mc.audioMessage.mimetype || "audio/ogg; codecs=opus";
-        const ext = mime.includes("mp4") || mime.includes("mpeg") || mime.includes("mp3") ? ".mp3" : ".ogg";
-        return { ext, mime, prefix: "audio" };
-    }
-    if (mc.videoMessage) {
-        const mime = mc.videoMessage.mimetype || "video/mp4";
-        let ext = ".mp4";
-        if (mime.includes("quicktime")) ext = ".mov";
-        else if (mime.includes("3gpp")) ext = ".3gp";
-        return { ext, mime, prefix: "video" };
-    }
-    return {
-        ext: item.isImage ? ".jpg" : ".mp4",
-        mime: item.isImage ? "image/jpeg" : "video/mp4",
-        prefix: "archivo"
-    };
-}
-
-async function procesarColaDescargas(sesion, sock, numero) {
-    if (sesion.isProcessingQueue) return;
-    sesion.isProcessingQueue = true;
-
-    while (sesion.downloadQueue.length > 0) {
-        const item = sesion.downloadQueue.shift();
-        sesion.activeDownloads++;
-        logMessage("info", `[DESCARGA SESION ${sesion.sessionId}] Procesando descarga FIFO para ${numero.split('@')[0]} (Pendientes en cola: ${sesion.downloadQueue.length})`, { evento: "descarga_inicio", numero, sessionId: sesion.sessionId });
-        
-        try {
-            const buffer = await descargarMediaConTimeout(item.msg, DOWNLOAD_TIMEOUT_MS);
-            const { ext, mime, prefix } = resolverExtensionYMime(item);
-            const fileName = `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}${ext}`;
-            const filePath = `${TEMP_DIR}/${fileName}`;
-            
-            await fsPromises.writeFile(filePath, buffer);
-            sesion.bytesDescargados = (sesion.bytesDescargados || 0) + buffer.length;
-            
-            sesion.archivosLocales.push({
-                path: filePath,
-                name: fileName,
-                mimeType: mime
-            });
-            logMessage("info", `[DESCARGA SESION ${sesion.sessionId}] Guardado archivo local: ${fileName} (${(buffer.length / (1024 * 1024)).toFixed(2)} MB). Total acumulado: ${(sesion.bytesDescargados / (1024 * 1024)).toFixed(1)} MB`, { evento: "descarga_exito", numero, sessionId: sesion.sessionId });
-        } catch (downloadErr) {
-            logMessage("error", `❌ [DESCARGA ERROR SESION ${sesion.sessionId}] Falló la descarga para ${numero.split('@')[0]}: ${downloadErr.message}`, { evento: "descarga_error", numero, sessionId: sesion.sessionId });
-        } finally {
-            sesion.activeDownloads--;
-            logMessage("info", `[DESCARGA SESION ${sesion.sessionId}] Descarga finalizada para ${numero.split('@')[0]} (Activas: ${sesion.activeDownloads})`, { evento: "descarga_fin", numero, sessionId: sesion.sessionId });
-        }
-    }
-
-    sesion.isProcessingQueue = false;
-
-    if (sesion.activeDownloads === 0 && sesion.downloadQueue.length === 0) {
-        evaluarTimeoutSubidaDrive(sesion, sock, numero);
-    }
-}
-
-function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
-    if (sesion.archivosLocales.length > 0) {
-        if (sesion.timeoutId) {
-            clearTimeout(sesion.timeoutId);
-            sesion.timeoutId = null;
-        }
-        logMessage("info", `[SESION ${sesion.sessionId}] Programando subida a Drive en 3 minutos para ${numero.split('@')[0]} (${sesion.archivosLocales.length} archivos en espera)`, { evento: "sesion_timer", numero, sessionId: sesion.sessionId });
-        sesion.timeoutId = setTimeout(async () => {
-            try {
-                logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Iniciando proceso de subida para ${numero.split('@')[0]}`, { evento: "drive_inicio", numero, sessionId: sesion.sessionId });
-                sesiones.delete(numero);
-
-                const now = new Date();
-                const year = now.getFullYear();
-                const month = String(now.getMonth() + 1).padStart(2, '0');
-                const day = String(now.getDate()).padStart(2, '0');
-                const numLimpio = numero.split('@')[0];
-                let carpetaName = `${year}${month}${day}_${numLimpio}`;
-                
-                if (sesion.esRecap) {
-                    carpetaName = `${year}${month}${day}_Recap`;
-                }
-                
-                let carpeta = await buscarCarpeta(carpetaName);
-                if (!carpeta) {
-                    logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Creando carpeta: ${carpetaName}`, { evento: "drive_crear_carpeta", numero, sessionId: sesion.sessionId });
-                    carpeta = await crearCarpeta(carpetaName);
-                }
-                
-                let subidosConExito = 0;
-                for (const archivo of sesion.archivosLocales) {
-                    if (existsSync(archivo.path)) {
-                        logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Subiendo archivo a Drive (Streaming con reintentos): ${archivo.name}`, { evento: "drive_subida_archivo", numero, sessionId: sesion.sessionId });
-                        try {
-                            await subirArchivoConReintentos(archivo.path, archivo.name, archivo.mimeType, carpeta.id);
-                            await fsPromises.unlink(archivo.path);
-                            logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Archivo subido y eliminado localmente: ${archivo.name}`, { evento: "drive_archivo_ok", numero, sessionId: sesion.sessionId });
-                            subidosConExito++;
-                        } catch (uploadErr) {
-                            logMessage("error", `❌ [DRIVE SESION ${sesion.sessionId}] Falló definitivamente la subida de ${archivo.name}. Se conserva en ./temp/: ${uploadErr.message}`, { evento: "drive_archivo_error", numero, sessionId: sesion.sessionId });
-                        }
-                    }
-                }
-                
-                if (subidosConExito > 0) {
-                    // Si el usuario envió textos o epígrafes durante la sesión, subirlos como info_envio.txt
-                    if (Array.isArray(sesion.textosEnviados) && sesion.textosEnviados.length > 0) {
-                        try {
-                            const fechaStr = now.toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
-                            const contenidoInfo = [
-                                "==================================================",
-                                "INFORMACIÓN Y EPÍGRAFES DEL ENVÍO - PRENSI BOT",
-                                "==================================================",
-                                `Remitente (WhatsApp): +${numLimpio} (https://wa.me/${numLimpio})`,
-                                `Fecha de procesamiento: ${fechaStr}`,
-                                `Archivos subidos en la sesión: ${subidosConExito}`,
-                                "--------------------------------------------------",
-                                "MENSAJES / DESCRIPCIÓN ENVIADA POR EL USUARIO:",
-                                "",
-                                ...sesion.textosEnviados.map((t, i) => `[${t.hora}] Mensaje ${i + 1}:\n${t.texto}\n`),
-                                "=================================================="
-                            ].join("\n");
-                            const infoBuffer = Buffer.from(contenidoInfo, "utf8");
-                            const nombreInfo = sesion.esRecap ? `info_envio_${numLimpio}_${Date.now()}.txt` : `info_envio_${Date.now()}.txt`;
-                            await subirArchivoStream(infoBuffer, nombreInfo, "text/plain; charset=utf-8", carpeta.id);
-                            logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Archivo de epígrafe ${nombreInfo} subido con éxito (${sesion.textosEnviados.length} mensaje(s)).`, { evento: "drive_info_txt_ok", numero, sessionId: sesion.sessionId });
-                        } catch (txtErr) {
-                            logMessage("warn", `⚠️ [DRIVE SESION ${sesion.sessionId}] No se pudo subir info_envio.txt: ${txtErr.message}`, { evento: "drive_info_txt_error", numero, sessionId: sesion.sessionId });
-                        }
-                    }
-
-                    enviosNuevos++;
-                    await guardarContador();
-                    logMessage("info", `[DRIVE SESION ${sesion.sessionId}] Subida completada con éxito para ${numero.split('@')[0]}. Enviando mensaje de agradecimiento.`, { evento: "drive_exito", numero, sessionId: sesion.sessionId });
-                    await sock.sendMessage(numero, { text: "Gracias por compartirlo con el equipo de Prensa." });
-                } else {
-                    logMessage("error", `❌ [DRIVE SESION ${sesion.sessionId}] No se pudo subir ningún archivo enviado por wa.me/${numero.split('@')[0]}. Los archivos se conservan en ./temp/.`, { evento: "drive_fallo_total", numero, sessionId: sesion.sessionId });
-                    try {
-                        await sock.sendMessage(ADMIN_NUMBER_JID, { text: `⚠️ *Error de Subida a Drive*\nFalló la subida de todos los archivos enviados por: wa.me/${numero.split('@')[0]}\nLos archivos se conservan en ./temp/ del servidor para revisión manual.` });
-                    } catch (notifyErr) {
-                        console.error("Error al notificar al admin:", notifyErr);
-                    }
-                }
-            } catch (err) {
-                logMessage("error", `[DRIVE SESION ${sesion.sessionId}] Error inesperado durante el ciclo de subida a drive: ${err.message}`, { evento: "drive_error_inesperado", numero, sessionId: sesion.sessionId });
-                try {
-                    await sock.sendMessage(ADMIN_NUMBER_JID, { text: `⚠️ *Error Inesperado en Subida a Drive*\nOcurrió un fallo en el ciclo de subida para: wa.me/${numero.split('@')[0]}` });
-                } catch (notifyErr) {
-                    console.error("Error al notificar al admin:", notifyErr);
-                }
-            }
-        }, 180000);
-    } else {
-        const esComandoRecap = sesion.esRecap;
-        if (!esComandoRecap) {
-            const ahora = Date.now();
-            const ultimaBienvenida = bienvenidaEnviada.get(numero) || 0;
-            const COOLDOWN_MS = 24 * 60 * 60 * 1000;
-
-            if (ahora - ultimaBienvenida > COOLDOWN_MS) {
-                logMessage("info", `[BIENVENIDA SESION ${sesion.sessionId}] Enviando mensaje de bienvenida a ${numero.split('@')[0]}`, { evento: "bienvenida_enviada", numero, sessionId: sesion.sessionId });
-                bienvenidaEnviada.set(numero, ahora);
-                sock.sendMessage(numero, { text: WELCOME_MESSAGE }).catch(e => console.error("Error enviando bienvenida:", e));
-            } else {
-                logMessage("info", `[BIENVENIDA SESION ${sesion.sessionId}] Omitiendo bienvenida para ${numero.split('@')[0]} por cooldown`, { evento: "bienvenida_cooldown", numero, sessionId: sesion.sessionId });
-            }
-        } else {
-            logMessage("info", `[COMANDO SESION ${sesion.sessionId}] Recibido #recap de ${numero.split('@')[0]}`, { evento: "comando_recap", numero, sessionId: sesion.sessionId });
-        }
-        sesiones.delete(numero);
-    }
-}
-
             try {
                 if (!sesiones.has(numero)) {
                     const sessionId = generarSessionId(numero);
@@ -1224,6 +1330,9 @@ function evaluarTimeoutSubidaDrive(sesion, sock, numero) {
                 if (textoSinRecap.length > 0) {
                     const horaMsg = new Date().toLocaleTimeString("es-AR", { timeZone: "America/Argentina/Buenos_Aires", hour: "2-digit", minute: "2-digit", second: "2-digit" });
                     sesion.textosEnviados.push({ hora: horaMsg, texto: textoSinRecap });
+                    if (sesion.archivosLocales.length > 0) {
+                        guardarSesionesActivas().catch(() => {});
+                    }
                 }
 
                 if (sesion.timeoutId) {
@@ -1440,6 +1549,42 @@ async function obtenerIndexHtmlCacheado() {
     return cacheIndexHtml.content;
 }
 
+const API_RATE_LIMIT_PER_MIN = parseInt(process.env.API_RATE_LIMIT_PER_MIN || "40", 10);
+const apiRateLimitMap = new Map(); // ip -> { count, resetAt }
+
+function obtenerIpCliente(req) {
+    const xff = req.headers["x-forwarded-for"];
+    if (xff) {
+        return String(xff).split(",")[0].trim();
+    }
+    return String(req.headers["x-real-ip"] || req.socket?.remoteAddress || "unknown").trim();
+}
+
+function verificarRateLimitApi(req, res) {
+    const ip = obtenerIpCliente(req);
+    const ahora = Date.now();
+    let entry = apiRateLimitMap.get(ip);
+
+    if (!entry || ahora >= entry.resetAt) {
+        if (apiRateLimitMap.size > 2000) {
+            for (const [k, v] of apiRateLimitMap.entries()) {
+                if (ahora >= v.resetAt) apiRateLimitMap.delete(k);
+            }
+        }
+        entry = { count: 1, resetAt: ahora + 60000 };
+        apiRateLimitMap.set(ip, entry);
+        return true;
+    }
+
+    entry.count++;
+    if (entry.count > API_RATE_LIMIT_PER_MIN) {
+        res.writeHead(429, { "Content-Type": "application/json; charset=utf-8", "Retry-After": "60" });
+        res.end(JSON.stringify({ status: "error", message: "Demasiadas consultas seguidas. Por favor aguardá un minuto e intentá nuevamente." }));
+        return false;
+    }
+    return true;
+}
+
 function esPeticionInternaAutorizada(req) {
     const authHeader = String(req.headers.authorization || "").trim();
     if (INTERNAL_API_TOKEN && authHeader === `Bearer ${INTERNAL_API_TOKEN}`) {
@@ -1486,7 +1631,11 @@ function iniciarHttpServer() {
             }
         }
 
-        // 3. Rutas de la API
+        // 3. Rutas de la API (con Rate Limiting por IP)
+        if (req.method === "GET" && req.url.startsWith("/api/")) {
+            if (!verificarRateLimitApi(req, res)) return;
+        }
+
         if (req.method === "GET" && req.url.startsWith("/api/certificados")) {
             try {
                 const queryParam = urlObj.searchParams.get("dni") || urlObj.searchParams.get("q") || "";
@@ -1591,8 +1740,9 @@ function iniciarHttpServer() {
 }
 
 async function apagarLimpio(signal) {
-    console.log(`\n🛑 Recibida señal ${signal}. Guardando contador y cerrando servidor...`);
+    console.log(`\n🛑 Recibida señal ${signal}. Guardando contador, sesiones activas y cerrando servidor...`);
     await guardarContador();
+    await guardarSesionesActivas();
     process.exit(0);
 }
 

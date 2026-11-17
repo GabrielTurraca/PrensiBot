@@ -22,6 +22,18 @@ Este archivo sirve como nexo de comunicación entre **Gemini (Navegador)**, **Cl
 
 ## ✅ Tareas Completadas
 
+- [x] **[2026-11-11] Mejoras de Resiliencia en Prensi Bot y Optimización de Búsqueda de Instancia en Oracle Cloud (OCI)**
+  - **Prensi Bot (`app.js`, `certificados-optimizado.js`, `package.json`)**:
+    - **Persistencia y Recuperación de Sesiones Activas**: Implementado `./temp/sesiones_activas.json` (`guardarSesionesActivas` y `rehidratarSesionesActivas`) para conservar envíos en curso ante reinicios de PM2 y reanudar automáticamente su subida a Google Drive al reconectar WhatsApp.
+    - **Protección de Archivos en Sesión**: Actualizado `limpiarArchivosHuerfanos()` para no eliminar archivos pertenecientes a sesiones activas o rehidratadas, y movidas las funciones de descarga/subida al ámbito global usando siempre `sockGlobal` activo.
+    - **Protección de Cuota de Google Drive y Rate Limiting API**: Incorporado rate limiter en memoria por IP (`verificarRateLimitApi`, 40 req/min por defecto) en `/api/*`, caché negativa de 5 min (`cacheNegativa`) y límite de fallbacks por minuto (`MAX_DRIVE_FALLBACKS_PER_MIN`) en `certificados-optimizado.js`, además de escapado seguro de comillas/barras en queries a Drive.
+    - **Limpieza**: Removida dependencia sin uso `ioredis` de `package.json` y ampliada la limpieza nocturna de mapas en memoria (`processedMessageIds` y `apiRateLimitMap`).
+  - **Búsqueda de Mejor Instancia en Oracle Cloud (`create_instance.py`)**:
+    - **Búsqueda Escalonada Always Free**: Incorporada rotación automática entre los perfiles `4 OCPU / 24 GB RAM`, `2 OCPU / 12 GB RAM` y `1 OCPU / 6 GB RAM` (`OCI_SHAPE_PROFILES`), descartando automáticamente perfiles mayores si exceden el límite restante del tenancy (`LimitExceeded`).
+    - **Rotación de Fault Domains**: Iteración sistemática entre `AUTO`, `FAULT-DOMAIN-1`, `FAULT-DOMAIN-2` y `FAULT-DOMAIN-3` en `sa-santiago-1` (`AD-1`).
+    - **Reducción del 50% de Llamadas API por Ciclo**: Eliminada la llamada redundante a `list_instances` antes de cada intento; ahora se verifica únicamente al inicio, cada 60 intentos (~30 min) o ante `LimitExceeded`.
+    - **Volumen de Arranque y Seguridad**: Configurado `InstanceSourceViaImageDetails` con `boot_volume_size_in_gbs=50` (configurable vía `OCI_BOOT_VOLUME_GB`) y soporte para header `Authorization: Bearer <INTERNAL_API_TOKEN>` hacia `/send-message`.
+
 - [x] **[2026-10-20] Mejoras en Certificados, Flujo de Prensa en WhatsApp, Seguridad y Limpieza de Código**
   - **Mejoras en Certificados (`certificados-optimizado.js`, `app.js`, `public/index.html`)**:
     - Descubrimiento e indexación automática de subcarpetas de primer nivel dentro de `CERTIFICADOS_FOLDER_ID`.

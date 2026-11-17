@@ -21,7 +21,6 @@
     "@whiskeysockets/baileys": "^6.7.9",
     "dotenv": "^16.4.5",
     "googleapis": "^144.0.0",
-    "ioredis": "^5.4.1",
     "node-cron": "^3.0.3",
     "qrcode-terminal": "^0.12.0"
   }
